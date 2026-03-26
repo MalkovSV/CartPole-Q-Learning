@@ -32,24 +32,21 @@
 См. `docs/usage.md`.
 
 ## Структура проекта
+    ```text
+    CartPole-Q-Learning/
+    ├── src/
+    │   ├── __init__.py
+    │   └── q_learning_cart_pole.py
+    ├── data/
+    │   └── (здесь будут сохраняться q_table.npy и графики)
+    ├── docs/
+    │   ├── README.md
+    │   ├── installation.md
+    │   └── usage.md
+    ├── requirements.txt
+    ├── .gitignore
+    └── LICENSE
 
-CartPole-Q-Learning/
-│
-├── src/
-│   ├── __init__.py
-│   └── q_learning_cart_pole.py
-│
-├── data/
-│   └── (здесь будут сохраняться q_table.npy и графики)
-│
-├── docs/
-│   ├── README.md
-│   ├── installation.md
-│   └── usage.md
-│
-├── requirements.txt
-├── .gitignore
-└── LICENSE
 
 
 ## Лицензия
