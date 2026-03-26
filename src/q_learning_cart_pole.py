@@ -17,8 +17,9 @@ CONFIG = {
 
     # ε‑жадная стратегия
     'EPSILON': 1.0,
-    'START_EPSILON_DECAYING': 100,      # ИЗМЕНЕНО: начинаем позже
-    'END_EPSILON_DECAYING': 800,     # ИЗМЕНЕНО: заканчиваем раньше
+    'START_EPSILON_DECAYING': 100,      # Начинаем затухание после 100 эпизодов
+    'MIN_EPSILON': 0.1,             # Минимальное значение эпсилона
+    'EPSILON_DECAY_RATE': 0.01,   # Коэффициент экспоненциального затухания (λ)
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [20] * 4,  # CartPole имеет 4 измерения состояния
@@ -29,10 +30,9 @@ CONFIG = {
     # Сохранение моделей
     'SAVE_MODEL_EVERY': 50,
 
-    # ПАРАМЕТРЫ ДЛЯ ЛИНЕЙНОГО ЗАТУХАНИЯ С АДАПТАЦИЕЙ
-    'MIN_EPSILON': 0.1,             # ИЗМЕНЕНО: повысили минимальный эпсилон
-    'PROGRESS_WINDOW': 50,         # окно для анализа прогресса
-    'PROGRESS_THRESHOLD': 0.2,    # ИЗМЕНЕНО: увеличили порог
+    # ПАРАМЕТРЫ ДЛЯ АНАЛИЗА ПРОГРЕССА
+    'PROGRESS_WINDOW': 50,         # окно для анализа прогресса (не используется в экспоненциальном затухании напрямую)
+    'PROGRESS_THRESHOLD': 0.2,    # порог для адаптации (не используется в базовой версии экспоненциального затухания)
 }
 
 # Путь к текущей директории
@@ -46,30 +46,58 @@ data_path = project_root / 'data'
 data_path.mkdir(exist_ok=True, parents=True)
 print(f"Папка создана по пути: {data_path}")
 
-def get_discrete_state(state, observation_low, discrete_os_win_size, discrete_os_size):
-    """Преобразует непрерывное состояние в дискретное"""
+def get_discrete_state(state, observation_low, observation_high, discrete_os_size):
+    """
+    Преобразует непрерывное состояние в дискретное с улучшенной обработкой крайних случаев.
+
+    Args:
+        state: непрерывное состояние (может быть tuple или array)
+        observation_low: нижние границы пространства наблюдений
+        observation_high: верхние границы пространства наблюдений
+        discrete_os_size: размер дискретного пространства для каждого измерения
+
+    Returns:
+        tuple: дискретное состояние
+    """
+    # Обработка tuple (если возвращается из reset)
     if isinstance(state, tuple):
         state = state[0]
 
-    try:
-        state_array = np.array(state, dtype=np.float64)
-        if state_array.size != len(observation_low):
-            raise ValueError(
-                f"Размер state ({state_array.size}) не соответствует ожидаемому ({len(observation_low)})"
-            )
-    except Exception as e:
-        print(f"Ошибка преобразования state: {e}")
-        print(f"Исходный state: {state}")
-        state_array = np.zeros(len(observation_low), dtype=np.float64)
+    state_array = np.array(state, dtype=np.float64)
 
-    discrete_state = np.floor(
-        (state_array - observation_low) / discrete_os_win_size
-    ).astype(np.int_)
-    discrete_state = np.clip(
-        discrete_state,
-        0,
-        np.array(discrete_os_size) - 1
-    )
+    # Проверка размеров
+    if state_array.size != len(observation_low):
+        raise ValueError(
+            f"Размер state ({state_array.size}) не соответствует ожидаемому ({len(observation_low)})"
+        )
+
+    # Нормализация с учётом границ
+    # Обрабатываем бесконечные границы
+    valid_range = np.isfinite(observation_high) & np.isfinite(observation_low)
+    normalized = np.zeros_like(state_array)
+
+    # Для измерений с конечными границами — нормальная нормализация
+    if np.any(valid_range):
+        range_values = observation_high[valid_range] - observation_low[valid_range]
+        # Избегаем деления на ноль
+        range_values = np.where(range_values == 0, 1.0, range_values)
+        normalized[valid_range] = (
+            (state_array[valid_range] - observation_low[valid_range]) / range_values
+        )
+        # Ограничиваем нормализованные значения диапазоном [0, 1]
+        normalized[valid_range] = np.clip(normalized[valid_range], 0.0, 1.0)
+
+    # Для измерений с бесконечными границами — используем сигмоиду для сжатия
+    infinite_mask = ~valid_range
+    if np.any(infinite_mask):
+        # Сигмоида сжимает любые значения в диапазон (0,1)
+        normalized[infinite_mask] = 1 / (1 + np.exp(-state_array[infinite_mask]))
+
+    # Преобразование в дискретные индексы
+    discrete_state = (normalized * discrete_os_size).astype(np.int_)
+    # Гарантируем, что индексы в допустимом диапазоне
+    discrete_state = np.clip(discrete_state, 0, np.array(discrete_os_size) - 1)
+
     return tuple(discrete_state)
 
 # ФУНКЦИЯ РАСЧЁТА ПРОГРЕССА ОБУЧЕНИЯ
@@ -109,31 +137,30 @@ for episode in range(CONFIG['EPISODES']):
         observation_high = np.array(env.observation_space.high, dtype=np.float64)
         observation_low = np.array(env.observation_space.low, dtype=np.float64)
 
-        for i in range(len(observation_high)):
-            if np.isinf(observation_high[i]):
-                observation_high[i] = 5.0
-            if np.isinf(observation_low[i]):
-                observation_low[i] = -5.0
+    # Сохраняем оригинальные границы для дискретизации
+    original_observation_high = observation_high.copy()
+    original_observation_low = observation_low.copy()
 
-        DISCRETE_OS_SIZE_ARRAY = np.array(CONFIG['DISCRETE_OS_SIZE'], dtype=np.int_)
-        discrete_os_win_size = np.divide(
-            np.subtract(observation_high, observation_low, dtype=np.float64),
-            DISCRETE_OS_SIZE_ARRAY,
-            dtype=np.float64
-        )
-        discrete_os_win_size = np.where(
-            discrete_os_win_size == 0,
-            1.0,
-            discrete_os_win_size
-        )
+    # Заменяем бесконечные значения на фиксированные границы для нормализации
+    for i in range(len(observation_high)):
+        if np.isinf(observation_high[i]):
+            observation_high[i] = 5.0
+        if np.isinf(observation_low[i]):
+            observation_low[i] = -5.0
 
-        q_table = np.zeros(
-            tuple(CONFIG['DISCRETE_OS_SIZE']) + (env.action_space.n,)
-        )
+    q_table = np.zeros(
+        tuple(CONFIG['DISCRETE_OS_SIZE']) + (env.action_space.n,)
+    )
 
     episode_reward = 0
     state, info = env.reset()
-    discrete_state = get_discrete_state(state, observation_low, discrete_os_win_size, CONFIG['DISCRETE_OS_SIZE'])
+    discrete_state = get_discrete_state(
+        state,
+        original_observation_low,  # Используем оригинальные границы
+        original_observation_high,
+        CONFIG['DISCRETE_OS_SIZE']
+)
+
     done = False
 
     while not done:
@@ -147,7 +174,13 @@ for episode in range(CONFIG['EPISODES']):
         done = terminated or truncated
         episode_reward += reward
 
-        new_discrete_state = get_discrete_state(new_state, observation_low, discrete_os_win_size, CONFIG['DISCRETE_OS_SIZE'])
+        new_discrete_state = get_discrete_state(
+            new_state,
+            original_observation_low,
+            original_observation_high,
+            CONFIG['DISCRETE_OS_SIZE']
+        )
+
 
         # Обновление Q‑таблицы только если не финальное состояние
         if not done:
@@ -161,147 +194,76 @@ for episode in range(CONFIG['EPISODES']):
 
         discrete_state = new_discrete_state
 
-    ep_rewards.append(episode_reward)
+        ep_rewards.append(episode_reward)
     epsilons_history.append(CONFIG['EPSILON'])
 
-        # АДАПТИВНОЕ ЛИНЕЙНОЕ УМЕНЬШЕНИЕ ЭПСИЛОНА
-    if (episode >= CONFIG['START_EPSILON_DECAYING'] and
-        episode <= CONFIG['END_EPSILON_DECAYING']):
-        # Рассчитываем прогресс обучения
-        progress = calculate_progress(ep_rewards, CONFIG['PROGRESS_WINDOW'])
-
-        # Базовая скорость затухания (линейная)
-        total_decay_episodes = CONFIG['END_EPSILON_DECAYING'] - CONFIG['START_EPSILON_DECAYING']
-        base_decay_per_episode = (1.0 - CONFIG['MIN_EPSILON']) / total_decay_episodes
-
-        # Адаптивная коррекция: замедляем затухание при плохом прогрессе, ускоряем при хорошем
-        adaptation_factor = max(0.5, min(2.0, 1.0 + progress / CONFIG['PROGRESS_THRESHOLD']))
-
-        # Расчёт итогового коэффициента затухания с учётом адаптации
-        decay_rate = base_decay_per_episode * adaptation_factor
-
-        # Линейное обновление эпсилона
-        new_epsilon = CONFIG['EPSILON'] - decay_rate
-        CONFIG['EPSILON'] = max(new_epsilon, CONFIG['MIN_EPSILON'])
-
-    elif episode > CONFIG['END_EPSILON_DECAYING']:
-        # После завершения периода затухания фиксируем минимальный эпсилон
-        CONFIG['EPSILON'] = CONFIG['MIN_EPSILON']
+    # ЭКПОНЕНЦИАЛЬНОЕ ЗАТУХАНИЕ ЭПСИЛОНА
+    if episode >= CONFIG['START_EPSILON_DECAYING']:
+        decay_steps = episode - CONFIG['START_EPSILON_DECAYING']
+        CONFIG['EPSILON'] = (
+            CONFIG['MIN_EPSILON'] +
+            (1.0 - CONFIG['MIN_EPSILON']) *
+            np.exp(-CONFIG['EPSILON_DECAY_RATE'] * decay_steps)
+        )
+        # Гарантируем, что эпсилон не опустится ниже минимума
+        CONFIG['EPSILON'] = max(CONFIG['EPSILON'], CONFIG['MIN_EPSILON'])
 
     # Сбор статистики каждые RENDER_EVERY эпизодов
     if episode % CONFIG['RENDER_EVERY'] == 0 and episode > 0:
+        # Расчёт агрегированных метрик за последние RENDER_EVERY эпизодов
         recent_rewards = ep_rewards[-CONFIG['RENDER_EVERY']:]
+        avg_reward = sum(recent_rewards) / len(recent_rewards)
+        min_reward = min(recent_rewards)
+        max_reward = max(recent_rewards)
+
+        # Сохранение агрегированных данных
         aggr_ep_rewards['ep'].append(episode)
-        aggr_ep_rewards['avg'].append(np.mean(recent_rewards))
-        aggr_ep_rewards['min'].append(np.min(recent_rewards))
-        aggr_ep_rewards['max'].append(np.max(recent_rewards))
+        aggr_ep_rewards['avg'].append(avg_reward)
+        aggr_ep_rewards['min'].append(min_reward)
+        aggr_ep_rewards['max'].append(max_reward)
 
-        print(f"Эпизод: {episode}, эпсилон: {CONFIG['EPSILON']:.3f}")
-        print(f"Среднее за {len(recent_rewards)} эпизодов: {np.mean(recent_rewards):.2f}")
+        print(f"Эпизод {episode}: avg reward: {avg_reward:.2f}, "
+              f"min: {min_reward:.2f}, max: {max_reward:.2f}, "
+              f"epsilon: {CONFIG['EPSILON']:.3f}")
 
-        # Ранняя остановка при достижении цели
-        if np.mean(recent_rewards) >= CONFIG['TARGET_REWARD']:
-            print(f"Цель достигнута на эпизоде {episode}!")
-            break
+    # Сохранение модели каждые SAVE_MODEL_EVERY эпизодов
+    if episode % CONFIG['SAVE_MODEL_EVERY'] == 0:
+        model_path = data_path / f"q_table_episode_{episode}.npy"
+        np.save(model_path, q_table)
+        print(f"Модель сохранена: {model_path}")
 
+# Завершение работы среды
+env.close()
 
-    env.close()
+# Построение графиков после завершения обучения
+plt.figure(figsize=(12, 8))
 
-# Визуализация результатов
-plt.figure(figsize=(12, 6))
-plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['avg'], label='Среднее', linewidth=2)
-plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['min'], label='Минимум', alpha=0.7)
-plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['max'], label='Максимум', alpha=0.7)
-plt.xlabel('Эпизод')
-plt.ylabel('Награда')
-plt.title('Обучение Q‑Learning: CartPole-v1')
-plt.legend()
-plt.grid(True, alpha=0.3)
-
-# Добавляем горизонтальную линию — целевое значение награды для CartPole
-plt.axhline(y=CONFIG['TARGET_REWARD'], color='r', linestyle='--',
-           alpha=0.7, label=f'Целевая награда ({CONFIG["TARGET_REWARD"]})')
-
-# Улучшаем отображение осей
-plt.xlim(left=0)
-plt.ylim(bottom=0)
-
-# Добавляем область заливки вокруг среднего значения
+# График наград
+plt.subplot(2, 1, 1)
+plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['avg'], label='Среднее', color='blue')
 plt.fill_between(
     aggr_ep_rewards['ep'],
     aggr_ep_rewards['min'],
     aggr_ep_rewards['max'],
-    color='skyblue',
-    alpha=0.2,
-    label='Диапазон наград'
+    alpha=0.3,
+    label='Диапазон',
+    color='blue'
 )
+plt.axhline(y=CONFIG['TARGET_REWARD'], color='red', linestyle='--', label='Цель')
+plt.title('Обучение: награды по эпизодам')
+plt.ylabel('Награда')
+plt.legend()
 
-# Добавляем аннотацию с итоговыми результатами
-if aggr_ep_rewards['avg']:
-    final_avg = aggr_ep_rewards['avg'][-1]
-    plt.annotate(
-        f'Финальное среднее: {final_avg:.1f}',
-        xy=(aggr_ep_rewards['ep'][-1], final_avg),
-        xytext=(20, -30),
-        textcoords='offset points',
-        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
-        arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'),
-        fontsize=10
-    )
-
-plt.tight_layout()
-plt.show()
-
-# Сохранение графика в файл
-plt.savefig(data_path / 'q_learning_training_progress.png', dpi=300, bbox_inches='tight')
-print("График сохранён как 'data/q_learning_training_progress.png'")
-
-# Дополнительный график для эпсилона
-plt.figure(figsize=(8, 4))
-plt.plot(range(len(epsilons_history)), epsilons_history, color='red', label='Эпсилон')
+# График эпсилона
+plt.subplot(2, 1, 2)
+plt.plot(range(len(epsilons_history)), epsilons_history, color='green')
+plt.title('Эпсилон по эпизодам (экспоненциальное затухание)')
 plt.xlabel('Эпизод')
-plt.ylabel('Значение эпсилона')
-plt.title('Изменение ε‑жадной стратегии во время обучения')
-plt.grid(True, alpha=0.3)
+plt.ylabel('Эпсилон')
+
 plt.tight_layout()
-plt.savefig(data_path / 'epsilon_decay.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-# Дополнительная статистика
-print("\n=== ФИНАЛЬНАЯ СТАТИСТИКА ОБУЧЕНИЯ ===")
-print(f"Всего эпизодов: {CONFIG['EPISODES']}")
-print(f"Финальное значение эпсилона: {CONFIG['EPSILON']:.4f}")
-
-if ep_rewards:
-    print(f"Максимальная награда за эпизод: {max(ep_rewards)}")
-    print(f"Минимальная награда за эпизод: {min(ep_rewards)}")
-    print(f"Средняя награда за все эпизоды: {np.mean(ep_rewards):.2f}")
-    print(f"Стандартное отклонение награды: {np.std(ep_rewards):.2f}")
-
-    # Анализ прогресса: сравнение начала и конца обучения
-    initial_period = ep_rewards[:CONFIG['RENDER_EVERY']] if len(ep_rewards) >= CONFIG['RENDER_EVERY'] else ep_rewards
-    final_period = ep_rewards[-CONFIG['RENDER_EVERY']:]
-    print(f"\nПрогресс обучения:")
-    print(f"  Начало: среднее {np.mean(initial_period):.2f} ± {np.std(initial_period):.2f}")
-    print(f"  Конец:  среднее {np.mean(final_period):.2f} ± {np.std(final_period):.2f}")
-
-# Сохранение модели
-np.save(data_path / 'q_table.npy', q_table)
-print("Q‑таблица сохранена как 'data/q_table.npy'")
-
-# Сохранение чекпоинта финальной модели
-if CONFIG['SAVE_MODEL_EVERY'] > 0 and CONFIG['EPISODES'] % CONFIG['SAVE_MODEL_EVERY'] == 0:
-    checkpoint_path = data_path / f'q_table_checkpoint_{CONFIG["EPISODES"]}.npy'
-    np.save(checkpoint_path, q_table)
-    print(f"Чекпоинт модели сохранён как '{checkpoint_path}'")
-
-# Сохранение лога обучения в CSV
-training_log = pd.DataFrame({
-    'episode': aggr_ep_rewards['ep'],
-    'average_reward': aggr_ep_rewards['avg'],
-    'min_reward': aggr_ep_rewards['min'],
-    'max_reward': aggr_ep_rewards['max'],
-    'epsilon': [epsilons_history[ep] for ep in aggr_ep_rewards['ep']]
-})
-training_log.to_csv(data_path / 'training_log.csv', index=False)
-print("Лог обучения сохранён как 'data/training_log.csv'")
+# Сохранение графиков
+plt.savefig(data_path / 'training_results.png')
+print(f"Графики сохранены: {data_path / 'training_results.png'}")
