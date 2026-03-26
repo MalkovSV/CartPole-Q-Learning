@@ -17,8 +17,8 @@ CONFIG = {
 
     # ε‑жадная стратегия
     'EPSILON': 1.0,
-    'START_EPSILON_DECAYING': 1,
-    'END_EPSILON_DECAYING': 100,  # EPISODES // 2
+    'START_EPSILON_DECAYING': 100,      # ИЗМЕНЕНО: начинаем позже
+    'END_EPSILON_DECAYING': 800,     # ИЗМЕНЕНО: заканчиваем раньше
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [20] * 4,  # CartPole имеет 4 измерения состояния
@@ -28,11 +28,11 @@ CONFIG = {
 
     # Сохранение моделей
     'SAVE_MODEL_EVERY': 50,
-    
-    # НОВЫЕ ПАРАМЕТРЫ ДЛЯ АДАПТИВНОГО ЗАТУХАНИЯ
-    'MIN_EPSILON': 0.01,          # минимальный эпсилон
-    'PROGRESS_WINDOW': 50,         # окно для анализа прогресса (количество последних эпизодов)
-    'PROGRESS_THRESHOLD': 0.1      # порог улучшения для адаптации скорости затухания
+
+    # ПАРАМЕТРЫ ДЛЯ ЛИНЕЙНОГО ЗАТУХАНИЯ С АДАПТАЦИЕЙ
+    'MIN_EPSILON': 0.1,             # ИЗМЕНЕНО: повысили минимальный эпсилон
+    'PROGRESS_WINDOW': 50,         # окно для анализа прогресса
+    'PROGRESS_THRESHOLD': 0.2,    # ИЗМЕНЕНО: увеличили порог
 }
 
 # Путь к текущей директории
@@ -72,7 +72,7 @@ def get_discrete_state(state, observation_low, discrete_os_win_size, discrete_os
     )
     return tuple(discrete_state)
 
-# НОВАЯ ФУНКЦИЯ: расчёт прогресса обучения
+# ФУНКЦИЯ РАСЧЁТА ПРОГРЕССА ОБУЧЕНИЯ
 def calculate_progress(rewards, window):
     """
     Рассчитывает прогресс как разницу средних наград между последними и предыдущими эпизодами.
@@ -99,7 +99,7 @@ ep_rewards = []
 aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
 epsilons_history = []  # для графика эпсилона
 
-# Основной цикл обучения
+# ОСНОВНОЙ ЦИКЛ ОБУЧЕНИЯ
 for episode in range(CONFIG['EPISODES']):
     # Настройка рендеринга
     render_mode = 'human' if episode % CONFIG['RENDER_EVERY'] == 0 else None
@@ -161,23 +161,32 @@ for episode in range(CONFIG['EPISODES']):
 
         discrete_state = new_discrete_state
 
-        ep_rewards.append(episode_reward)
+    ep_rewards.append(episode_reward)
     epsilons_history.append(CONFIG['EPSILON'])
 
-    # АДАПТИВНОЕ УМЕНЬШЕНИЕ ЭПСИЛОНА НА ОСНОВЕ ПРОГРЕССА
-    if episode >= CONFIG['START_EPSILON_DECAYING']:
+        # АДАПТИВНОЕ ЛИНЕЙНОЕ УМЕНЬШЕНИЕ ЭПСИЛОНА
+    if (episode >= CONFIG['START_EPSILON_DECAYING'] and
+        episode <= CONFIG['END_EPSILON_DECAYING']):
         # Рассчитываем прогресс обучения
         progress = calculate_progress(ep_rewards, CONFIG['PROGRESS_WINDOW'])
-        
-        # Базовая скорость затухания
-        base_decay = 0.001
-        # Адаптивная скорость: ускоряем затухание при хорошем прогрессе, замедляем при плохом
-        adaptive_decay = base_decay * (1 + progress / CONFIG['PROGRESS_THRESHOLD'])
-        # Обновляем эпсилон с ограничением минимального значения
-        CONFIG['EPSILON'] = max(
-            CONFIG['EPSILON'] * (1 - adaptive_decay),
-            CONFIG['MIN_EPSILON']
-        )
+
+        # Базовая скорость затухания (линейная)
+        total_decay_episodes = CONFIG['END_EPSILON_DECAYING'] - CONFIG['START_EPSILON_DECAYING']
+        base_decay_per_episode = (1.0 - CONFIG['MIN_EPSILON']) / total_decay_episodes
+
+        # Адаптивная коррекция: замедляем затухание при плохом прогрессе, ускоряем при хорошем
+        adaptation_factor = max(0.5, min(2.0, 1.0 + progress / CONFIG['PROGRESS_THRESHOLD']))
+
+        # Расчёт итогового коэффициента затухания с учётом адаптации
+        decay_rate = base_decay_per_episode * adaptation_factor
+
+        # Линейное обновление эпсилона
+        new_epsilon = CONFIG['EPSILON'] - decay_rate
+        CONFIG['EPSILON'] = max(new_epsilon, CONFIG['MIN_EPSILON'])
+
+    elif episode > CONFIG['END_EPSILON_DECAYING']:
+        # После завершения периода затухания фиксируем минимальный эпсилон
+        CONFIG['EPSILON'] = CONFIG['MIN_EPSILON']
 
     # Сбор статистики каждые RENDER_EVERY эпизодов
     if episode % CONFIG['RENDER_EVERY'] == 0 and episode > 0:
@@ -194,6 +203,7 @@ for episode in range(CONFIG['EPISODES']):
         if np.mean(recent_rewards) >= CONFIG['TARGET_REWARD']:
             print(f"Цель достигнута на эпизоде {episode}!")
             break
+
 
     env.close()
 
