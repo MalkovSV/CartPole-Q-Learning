@@ -9,7 +9,7 @@ from functools import lru_cache
 # КОНФИГУРАЦИЯ — все параметры в одном месте
 CONFIG = {
     # Основные параметры обучения
-    'EPISODES': 1000,
+    'EPISODES': 2000,
     'RENDER_EVERY': 20,
 
     # Параметры Q‑learning
@@ -24,6 +24,8 @@ CONFIG = {
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [20] * 4,  # CartPole имеет 4 измерения состояния
+    'DISCRETIZATION_METHOD': 'linear',  # 'linear' или 'sigmoid'
+
 
     # Целевые показатели
     'TARGET_REWARD': 450,
@@ -47,10 +49,20 @@ class QLearningTrainer:
         self.aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
         self.epsilons_history = []
 
+        # Проверяем корректность метода дискретизации
+        if self.config['DISCRETIZATION_METHOD'] not in ['linear', 'sigmoid']:
+            raise ValueError("DISCRETIZATION_METHOD должен быть 'linear' или 'sigmoid'")
+
         # Конвертируем в кортежи один раз для кэширования
         self.OBSERVATION_LOW_TUPLE = tuple(self.observation_low)
         self.OBSERVATION_HIGH_TUPLE = tuple(self.observation_high)
         self.DISCRETE_OS_SIZE_TUPLE = tuple(self.config['DISCRETE_OS_SIZE'])
+
+        # Инициализируем кэш с учётом метода дискретизации
+        if self.config['DISCRETIZATION_METHOD'] == 'linear':
+            self.get_discrete_state = self._get_discrete_state_linear
+        else:
+            self.get_discrete_state = self.get_discrete_state_cached
 
     def _setup_directories(self):
         """Создаёт необходимые директории для сохранения данных."""
@@ -84,9 +96,9 @@ class QLearningTrainer:
             tuple(self.config['DISCRETE_OS_SIZE']) + (self.action_space_n,)
         )
 
-    @lru_cache(maxsize=1000)
+    @lru_cache(maxsize=5000)
     def get_discrete_state_cached(self, state_tuple):
-        """Кэшированная версия преобразования непрерывного состояния в дискретное."""
+        """Кэшированная версия преобразования непрерывного состояния в дискретное (sigmoid-метод)."""
         state = np.array(state_tuple, dtype=np.float64)
 
         if state.size != len(self.OBSERVATION_LOW_TUPLE):
@@ -136,7 +148,7 @@ class QLearningTrainer:
 
         episode_reward = 0
         state, info = env.reset()
-        discrete_state = self.get_discrete_state_cached(tuple(state))
+        discrete_state = self.get_discrete_state(tuple(state))  # Универсальный вызов
 
         done = False
 
@@ -151,7 +163,7 @@ class QLearningTrainer:
             done = terminated or truncated
             episode_reward += reward
 
-            new_discrete_state = self.get_discrete_state_cached(tuple(new_state))
+            new_discrete_state = self.get_discrete_state(tuple(new_state))  # Универсальный вызов
 
             # Обновление Q‑таблицы только если не финальное состояние
             if not done:
@@ -282,6 +294,23 @@ class QLearningTrainer:
         # Построение графиков после завершения обучения
         self.plot_training_results()
 
+    def _get_discrete_state_linear(self, state):
+        """
+        Линейная дискретизация: прямое линейное отображение в диапазон дискретных значений.
+        Гарантирует равномерное распределение ячеек по диапазону наблюдений.
+        """
+        discrete_state = []
+        for i, val in enumerate(state):
+            # Линейное отображение в диапазон дискретных значений
+            discrete_val = int(
+                (val - self.observation_low[i]) /
+                (self.observation_high[i] - self.observation_low[i]) *
+                self.config['DISCRETE_OS_SIZE'][i]
+            )
+            # Жёсткие границы: не выходим за пределы допустимого диапазона
+            discrete_val = max(0, min(discrete_val, self.config['DISCRETE_OS_SIZE'][i] - 1))
+            discrete_state.append(discrete_val)
+        return tuple(discrete_state)
 
 # Запуск обучения
 if __name__ == '__main__':
