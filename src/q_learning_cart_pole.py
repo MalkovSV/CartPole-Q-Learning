@@ -3,11 +3,12 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 
 # КОНФИГУРАЦИЯ — все параметры в одном месте
 CONFIG = {
     # Основные параметры обучения
-    'EPISODES': 200,
+    'EPISODES': 1000,
     'RENDER_EVERY': 10,
 
     # Параметры Q‑learning
@@ -26,7 +27,12 @@ CONFIG = {
     'TARGET_REWARD': 450,
 
     # Сохранение моделей
-    'SAVE_MODEL_EVERY': 50
+    'SAVE_MODEL_EVERY': 50,
+    
+    # НОВЫЕ ПАРАМЕТРЫ ДЛЯ АДАПТИВНОГО ЗАТУХАНИЯ
+    'MIN_EPSILON': 0.01,          # минимальный эпсилон
+    'PROGRESS_WINDOW': 50,         # окно для анализа прогресса (количество последних эпизодов)
+    'PROGRESS_THRESHOLD': 0.1      # порог улучшения для адаптации скорости затухания
 }
 
 # Путь к текущей директории
@@ -66,6 +72,24 @@ def get_discrete_state(state, observation_low, discrete_os_win_size, discrete_os
     )
     return tuple(discrete_state)
 
+# НОВАЯ ФУНКЦИЯ: расчёт прогресса обучения
+def calculate_progress(rewards, window):
+    """
+    Рассчитывает прогресс как разницу средних наград между последними и предыдущими эпизодами.
+
+    Args:
+        rewards: список наград за все эпизоды
+        window: размер окна для анализа (количество эпизодов)
+
+    Returns:
+        progress: разница средних значений (может быть отрицательной)
+    """
+    if len(rewards) < window * 2:
+        return 0
+    recent = rewards[-window:]  # последние эпизоды
+    previous = rewards[-window*2:-window]  # эпизоды перед последними
+    return np.mean(recent) - np.mean(previous)
+
 # Переменные для хранения данных среды
 observation_high = None
 observation_low = None
@@ -73,7 +97,6 @@ discrete_os_win_size = None
 q_table = None
 ep_rewards = []
 aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
-epsilon_decay_value = 0
 epsilons_history = []  # для графика эпсилона
 
 # Основной цикл обучения
@@ -108,12 +131,6 @@ for episode in range(CONFIG['EPISODES']):
             tuple(CONFIG['DISCRETE_OS_SIZE']) + (env.action_space.n,)
         )
 
-        # Вычисление скорости убывания эпсилона с проверкой
-        if CONFIG['END_EPSILON_DECAYING'] > CONFIG['START_EPSILON_DECAYING']:
-            epsilon_decay_value = CONFIG['EPSILON'] / (CONFIG['END_EPSILON_DECAYING'] - CONFIG['START_EPSILON_DECAYING'])
-        else:
-            epsilon_decay_value = 0
-
     episode_reward = 0
     state, info = env.reset()
     discrete_state = get_discrete_state(state, observation_low, discrete_os_win_size, CONFIG['DISCRETE_OS_SIZE'])
@@ -144,12 +161,23 @@ for episode in range(CONFIG['EPISODES']):
 
         discrete_state = new_discrete_state
 
-    ep_rewards.append(episode_reward)
+        ep_rewards.append(episode_reward)
     epsilons_history.append(CONFIG['EPSILON'])
 
-    # Уменьшение эпсилона
-    if CONFIG['END_EPSILON_DECAYING'] >= episode >= CONFIG['START_EPSILON_DECAYING']:
-        CONFIG['EPSILON'] -= epsilon_decay_value
+    # АДАПТИВНОЕ УМЕНЬШЕНИЕ ЭПСИЛОНА НА ОСНОВЕ ПРОГРЕССА
+    if episode >= CONFIG['START_EPSILON_DECAYING']:
+        # Рассчитываем прогресс обучения
+        progress = calculate_progress(ep_rewards, CONFIG['PROGRESS_WINDOW'])
+        
+        # Базовая скорость затухания
+        base_decay = 0.001
+        # Адаптивная скорость: ускоряем затухание при хорошем прогрессе, замедляем при плохом
+        adaptive_decay = base_decay * (1 + progress / CONFIG['PROGRESS_THRESHOLD'])
+        # Обновляем эпсилон с ограничением минимального значения
+        CONFIG['EPSILON'] = max(
+            CONFIG['EPSILON'] * (1 - adaptive_decay),
+            CONFIG['MIN_EPSILON']
+        )
 
     # Сбор статистики каждые RENDER_EVERY эпизодов
     if episode % CONFIG['RENDER_EVERY'] == 0 and episode > 0:
@@ -258,8 +286,6 @@ if CONFIG['SAVE_MODEL_EVERY'] > 0 and CONFIG['EPISODES'] % CONFIG['SAVE_MODEL_EV
     print(f"Чекпоинт модели сохранён как '{checkpoint_path}'")
 
 # Сохранение лога обучения в CSV
-import pandas as pd
-
 training_log = pd.DataFrame({
     'episode': aggr_ep_rewards['ep'],
     'average_reward': aggr_ep_rewards['avg'],
