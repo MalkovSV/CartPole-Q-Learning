@@ -192,19 +192,39 @@ class QLearningTrainer:
             # Гарантируем, что эпсилон не опустится ниже минимума
             self.config['EPSILON'] = max(self.config['EPSILON'], self.config['MIN_EPSILON'])
 
-    def save_model(self, episode, avg_reward):
-        """Сохраняет модель, если средняя награда близка к лучшей."""
-        if not self.aggr_ep_rewards['avg']:  # проверяем, есть ли накопленные данные
+    def save_top_models(self, episode, avg_reward):
+        """Сохраняет текущую модель и поддерживает топ‑3 лучших моделей."""
+        model_path = self.data_path / f"q_table_episode_{episode}_reward_{avg_reward:.2f}.npy"
+        np.save(model_path, self.q_table)
+
+        # Поддерживаем топ‑3 моделей по награде
+        all_models = [
+            f for f in self.data_path.glob("q_table_*.npy")
+            if "best" not in f.name  # Исключаем модели с пометкой 'best'
+        ]
+
+        if not all_models:
             return
 
-        best_avg = max(self.aggr_ep_rewards['avg'])
+        # Сортируем модели по награде (извлекаем из имени файла) в порядке убывания
+        try:
+            top_models = sorted(
+                all_models,
+                key=lambda x: float(x.stem.split("_")[-1]),  # Извлекаем награду из имени файла
+                reverse=True
+            )[:3]  # Берём топ‑3
+        except (ValueError, IndexError) as e:
+            print(f"Ошибка при обработке имён файлов моделей: {e}")
+            return
 
-        # Сохраняем модели с наградой не менее 95 % от лучшей
-        if avg_reward >= best_avg * 0.95:
-            model_path = self.data_path / f"q_table_best_episode_{episode}_reward_{avg_reward:.2f}.npy"
-            np.save(model_path, self.q_table)
-            print(f"Лучшая модель сохранена: {model_path} (награда: {avg_reward:.2f}, лучшая: {best_avg:.2f})")
-
+        # Удаляем модели, не входящие в топ‑3
+        for model in all_models:
+            if model not in top_models:
+                try:
+                    model.unlink()  # Удаляем старый файл модели
+                    print(f"Удалена старая модель: {model.name}")
+                except OSError as e:
+                    print(f"Не удалось удалить файл {model}: {e}")
 
     def log_episode_stats(self, episode, avg_reward, min_reward, max_reward):
         """Логирует статистику эпизода."""
@@ -286,10 +306,11 @@ class QLearningTrainer:
 
                 self.log_episode_stats(episode, avg_reward, min_reward, max_reward)
 
-            # Сохранение модели каждые SAVE_MODEL_EVERY эпизодов, но только если награда высокая
-            if episode % self.config['SAVE_MODEL_EVERY'] == 0 and len(self.aggr_ep_rewards['avg']) > 0:
-                avg_reward = self.aggr_ep_rewards['avg'][-1]  # берём последнюю среднюю награду
-                self.save_model(episode, avg_reward)
+            # Сохранение топ‑3 моделей каждые SAVE_MODEL_EVERY эпизодов
+            if episode % self.config['SAVE_MODEL_EVERY'] == 0:
+                if self.aggr_ep_rewards['avg']:  # Проверяем, есть ли накопленные данные
+                    avg_reward = self.aggr_ep_rewards['avg'][-1]  # Берём последнюю среднюю награду
+                    self.save_top_models(episode, avg_reward)
 
             # Проверка условий остановки
             progress = self.calculate_progress(self.ep_rewards, self.config['PROGRESS_WINDOW'])
