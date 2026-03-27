@@ -4,13 +4,14 @@ import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import pickle
 from functools import lru_cache
 
 # КОНФИГУРАЦИЯ — все параметры в одном месте
 CONFIG = {
     # Основные параметры обучения
     'EPISODES': 2000,
-    'RENDER_EVERY': 20,
+    'RENDER_EVERY': 40,
 
     # Параметры Q‑learning
     'LEARNING_RATE': 0.1,
@@ -18,13 +19,13 @@ CONFIG = {
 
     # ε‑жадная стратегия
     'EPSILON': 1.0,
-    'START_EPSILON_DECAYING': 100,      # Начинаем затухание после 100 эпизодов
-    'MIN_EPSILON': 0.1,             # Минимальное значение эпсилона
+    'START_EPSILON_DECAYING': 150,      # Начинаем затухание после 100 эпизодов
+    'MIN_EPSILON': 0.05,             # Минимальное значение эпсилона
     'EPSILON_DECAY_RATE': 0.01,   # Коэффициент экспоненциального затухания (λ)
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [20] * 4,  # CartPole имеет 4 измерения состояния
-    'DISCRETIZATION_METHOD': 'sigmoid',  # 'linear' или 'sigmoid'
+    'DISCRETIZATION_METHOD': 'linear',  # 'linear' или 'sigmoid'
 
 
     # Целевые показатели
@@ -35,7 +36,7 @@ CONFIG = {
 
     # ПАРАМЕТРЫ ДЛЯ АНАЛИЗА ПРОГРЕССА
     'PROGRESS_WINDOW': 50,         # окно для анализа прогресса
-    'PROGRESS_THRESHOLD': 0.2,    # порог для адаптации
+    'PROGRESS_THRESHOLD': 0.1,    # порог для адаптации
 }
 
 
@@ -53,7 +54,7 @@ class QLearningTrainer:
         if self.config['DISCRETIZATION_METHOD'] not in ['linear', 'sigmoid']:
             raise ValueError("DISCRETIZATION_METHOD должен быть 'linear' или 'sigmoid'")
 
-        # Конвертируем в кортежи один раз для кэширования
+        # Конвертируем в кортежи
         self.OBSERVATION_LOW_TUPLE = tuple(self.observation_low)
         self.OBSERVATION_HIGH_TUPLE = tuple(self.observation_high)
         self.DISCRETE_OS_SIZE_TUPLE = tuple(self.config['DISCRETE_OS_SIZE'])
@@ -91,10 +92,19 @@ class QLearningTrainer:
         return observation_high, observation_low, action_space_n
 
     def _create_q_table(self):
-        """Создание Q‑таблицы."""
-        return np.zeros(
-            tuple(self.config['DISCRETE_OS_SIZE']) + (self.action_space_n,)
-        )
+        """Создаёт Q‑таблицу как словарь вместо массива."""
+        return {}  # Пустой словарь вместо np.zeros
+
+    def _get_q_value(self, discrete_state, action):
+        """Получает Q‑значение для состояния и действия. Создаёт запись, если её нет."""
+        key = discrete_state + (action,)
+        if key not in self.q_table:
+            self.q_table[key] = 0.0
+        return self.q_table[key]
+
+    def _set_q_value(self, discrete_state, action, value):
+        """Устанавливает Q‑значение для состояния и действия."""
+        self.q_table[discrete_state + (action,)] = value    
 
     def get_discrete_state_sigmoid(self, state_tuple):
         """
@@ -151,7 +161,12 @@ class QLearningTrainer:
         while not done:
             # Выбор действия: ε‑жадная стратегия
             if np.random.random() > self.config['EPSILON']:
-                action = np.argmax(self.q_table[discrete_state])
+                # Получаем все Q‑значения для текущего состояния
+                q_values = [
+                    self._get_q_value(discrete_state, a)
+                    for a in range(self.action_space_n)
+                ]
+                action = np.argmax(q_values)
             else:
                 action = np.random.randint(0, self.action_space_n)
 
@@ -159,21 +174,35 @@ class QLearningTrainer:
             done = terminated or truncated
             episode_reward += reward
 
-            new_discrete_state = self.get_discrete_state(tuple(new_state))  # Универсальный вызов
+            new_discrete_state = self.get_discrete_state(tuple(new_state))
 
-            # Обновление Q‑таблицы только если не финальное состояние
+            # Обновление Q‑таблицы
             if not done:
-                max_future_q = np.max(self.q_table[new_discrete_state])
-                current_q = self.q_table[discrete_state + (action,)]
-                new_q = (1 - self.config['LEARNING_RATE']) * current_q + self.config['LEARNING_RATE'] * (reward + self.config['DISCOUNT'] * max_future_q)
-                self.q_table[discrete_state + (action,)] = new_q
+                # Получаем максимальное будущее Q‑значение
+                future_q_values = [
+                    self._get_q_value(new_discrete_state, a)
+                    for a in range(self.action_space_n)
+                ]
+                max_future_q = np.max(future_q_values)
+
+                # Текущее Q‑значение
+                current_q = self._get_q_value(discrete_state, action)
+
+                # Новое Q‑значение по формуле Q‑learning
+                new_q = (
+                    (1 - self.config['LEARNING_RATE']) * current_q +
+                    self.config['LEARNING_RATE'] * (reward + self.config['DISCOUNT'] * max_future_q)
+                )
+
+                # Сохраняем обновлённое значение
+                self._set_q_value(discrete_state, action, new_q)
             else:
                 # В финальном состоянии Q‑значение = 0
-                self.q_table[discrete_state + (action,)] = 0
+                self._set_q_value(discrete_state, action, 0)
 
             discrete_state = new_discrete_state
 
-        env.close()  # Закрываем среду после каждого эпизода
+        env.close()
         return episode_reward
 
     def update_epsilon(self, episode):
@@ -188,36 +217,41 @@ class QLearningTrainer:
             # Гарантируем, что эпсилон не опустится ниже минимума
             self.config['EPSILON'] = max(self.config['EPSILON'], self.config['MIN_EPSILON'])
 
+    def load_model(self, model_path):
+        """Загружает Q‑таблицу из файла."""
+        with open(model_path, 'rb') as f:
+            self.q_table = pickle.load(f)
+        print(f"Модель загружена: {model_path}")
+
     def save_top_models(self, episode, avg_reward):
         """Сохраняет текущую модель и поддерживает топ‑3 лучших моделей."""
-        model_path = self.data_path / f"q_table_episode_{episode}_reward_{avg_reward:.2f}.npy"
-        np.save(model_path, self.q_table)
+        model_path = self.data_path / f"q_table_episode_{episode}_reward_{avg_reward:.2f}.pkl"
+        with open(model_path, 'wb') as f:
+            pickle.dump(self.q_table, f)
 
         # Поддерживаем топ‑3 моделей по награде
         all_models = [
-            f for f in self.data_path.glob("q_table_*.npy")
-            if "best" not in f.name  # Исключаем модели с пометкой 'best'
+            f for f in self.data_path.glob("q_table_*.pkl")
+            if "best" not in f.name
         ]
 
         if not all_models:
             return
 
-        # Сортируем модели по награде (извлекаем из имени файла) в порядке убывания
         try:
             top_models = sorted(
                 all_models,
-                key=lambda x: float(x.stem.split("_")[-1]),  # Извлекаем награду из имени файла
+                key=lambda x: float(x.stem.split("_")[-1]),
                 reverse=True
-            )[:3]  # Берём топ‑3
+            )[:3]
         except (ValueError, IndexError) as e:
             print(f"Ошибка при обработке имён файлов моделей: {e}")
             return
 
-        # Удаляем модели, не входящие в топ‑3
         for model in all_models:
             if model not in top_models:
                 try:
-                    model.unlink()  # Удаляем старый файл модели
+                    model.unlink()
                     print(f"Удалена старая модель: {model.name}")
                 except OSError as e:
                     print(f"Не удалось удалить файл {model}: {e}")
@@ -225,8 +259,9 @@ class QLearningTrainer:
     def log_episode_stats(self, episode, avg_reward, min_reward, max_reward):
         """Логирует статистику эпизода."""
         print(f"Эпизод {episode}: avg reward: {avg_reward:.2f}, "
-              f"min: {min_reward:.2f}, max: {max_reward:.2f}, "
-              f"epsilon: {self.config['EPSILON']:.3f}")
+            f"min: {min_reward:.2f}, max: {max_reward:.2f}, "
+            f"epsilon: {self.config['EPSILON']:.3f}, "
+            f"Q‑table size: {len(self.q_table)}")
 
     def should_stop_training(self, progress):
         """Проверяет, нужно ли остановить обучение."""
@@ -247,10 +282,10 @@ class QLearningTrainer:
 
     def plot_training_results(self):
         """Строит и сохраняет графики результатов обучения."""
-        plt.figure(figsize=(12, 8))
+        plt.figure(figsize=(12, 10))
 
         # График наград
-        plt.subplot(2, 1, 1)
+        plt.subplot(3, 1, 1)
         plt.plot(self.aggr_ep_rewards['ep'], self.aggr_ep_rewards['avg'], label='Среднее', color='blue')
         plt.fill_between(
             self.aggr_ep_rewards['ep'],
@@ -266,16 +301,25 @@ class QLearningTrainer:
         plt.legend()
 
         # График эпсилона
-        plt.subplot(2, 1, 2)
+        plt.subplot(3, 1, 2)
         plt.plot(range(len(self.epsilons_history)), self.epsilons_history, color='green')
         plt.title('Эпсилон по эпизодам (экспоненциальное затухание)')
         plt.xlabel('Эпизод')
         plt.ylabel('Эпсилон')
 
+        # График размера Q‑таблицы
+        plt.subplot(3, 1, 3)
+        table_sizes = [len(self.q_table)] * len(self.aggr_ep_rewards['ep'])
+        plt.plot(self.aggr_ep_rewards['ep'], table_sizes, color='purple')
+        plt.title('Размер Q‑таблицы (число посещённых состояний)')
+        plt.xlabel('Эпизод')
+        plt.ylabel('Число записей')
+
         plt.tight_layout()
         plt.savefig(self.data_path / 'training_results.png')
         print(f"Графики сохранены: {self.data_path / 'training_results.png'}")
         plt.show()
+
 
     def train(self):
         """Основной цикл обучения."""
@@ -334,8 +378,36 @@ class QLearningTrainer:
             discrete_state.append(discrete_val)
         return tuple(discrete_state)
 
+def load_latest_model(trainer):
+    """Загружает последнюю сохранённую модель, если она существует."""
+    model_files = list(trainer.data_path.glob("q_table_*.pkl"))
+
+    if not model_files:
+        print("Нет сохранённых моделей для загрузки. Начинаем обучение с нуля.")
+        return False
+
+    # Сортируем по имени файла (в нём содержится награда) и берём последний
+    try:
+        latest_model = sorted(
+            model_files,
+            key=lambda x: float(x.stem.split("_")[-1]),
+            reverse=True
+        )[0]  # Берём первый после сортировки (с максимальной наградой)
+        trainer.load_model(latest_model)
+        return True
+    except (ValueError, IndexError) as e:
+        print(f"Не удалось определить последнюю модель: {e}")
+        return False
+          
 # Запуск обучения
 if __name__ == '__main__':
     trainer = QLearningTrainer(CONFIG)
+
+    # Пытаемся загрузить последнюю модель
+    if load_latest_model(trainer):
+        print("Обучение продолжено с последней сохранённой модели.")
+    else:
+        print("Начинаем новое обучение.")
+        
     trainer.train()
     
