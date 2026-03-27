@@ -24,7 +24,7 @@ CONFIG = {
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [20] * 4,  # CartPole имеет 4 измерения состояния
-    'DISCRETIZATION_METHOD': 'linear',  # 'linear' или 'sigmoid'
+    'DISCRETIZATION_METHOD': 'sigmoid',  # 'linear' или 'sigmoid'
 
 
     # Целевые показатели
@@ -62,7 +62,7 @@ class QLearningTrainer:
         if self.config['DISCRETIZATION_METHOD'] == 'linear':
             self.get_discrete_state = self._get_discrete_state_linear
         else:
-            self.get_discrete_state = self.get_discrete_state_cached
+            self.get_discrete_state = self.get_discrete_state_sigmoid
 
     def _setup_directories(self):
         """Создаёт необходимые директории для сохранения данных."""
@@ -96,11 +96,13 @@ class QLearningTrainer:
             tuple(self.config['DISCRETE_OS_SIZE']) + (self.action_space_n,)
         )
 
-    @lru_cache(maxsize=5000)
-    def get_discrete_state_cached(self, state_tuple):
-        """Кэшированная версия преобразования непрерывного состояния в дискретное (sigmoid-метод)."""
+    def get_discrete_state_sigmoid(self, state_tuple):
+        """
+        Преобразование непрерывного состояния в дискретное (sigmoid‑метод).
+        Нормализует входные значения и применяет сигмоидальное преобразование
+        для бесконечных границ.
+        """
         state = np.array(state_tuple, dtype=np.float64)
-
         if state.size != len(self.OBSERVATION_LOW_TUPLE):
             raise ValueError(
                 f"Размер state ({state.size}) не соответствует ожидаемому ({len(self.OBSERVATION_LOW_TUPLE)})"
@@ -126,6 +128,7 @@ class QLearningTrainer:
 
         return tuple(discrete_state)
 
+
     def calculate_progress(self, rewards, window):
         """Рассчитывает прогресс как разницу средних наград между последними и предыдущими эпизодами."""
         if len(rewards) < window * 2:
@@ -133,13 +136,6 @@ class QLearningTrainer:
         recent = rewards[-window:]  # последние эпизоды
         previous = rewards[-window*2:-window]  # эпизоды перед последними
         return np.mean(recent) - np.mean(previous)
-
-    def print_cache_stats(self):
-        """Выводит статистику по кэшу."""
-        cache_info = self.get_discrete_state_cached.cache_info()
-        print(f"Кэш дискретных состояний: hits={cache_info.hits}, "
-              f"misses={cache_info.misses}, "
-              f"current_size={cache_info.currsize}/{cache_info.maxsize}")
 
     def train_episode(self, episode):
         """Обучает один эпизод и возвращает накопленную награду."""
@@ -316,10 +312,6 @@ class QLearningTrainer:
             progress = self.calculate_progress(self.ep_rewards, self.config['PROGRESS_WINDOW'])
             if self.should_stop_training(progress):
                 break
-
-            # Вывод статистики кэша каждые 100 эпизодов
-            if episode % 100 == 0:
-                self.print_cache_stats()
 
         # Построение графиков после завершения обучения
         self.plot_training_results()
