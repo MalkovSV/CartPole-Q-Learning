@@ -140,12 +140,29 @@ class QLearningTrainer:
 
 
     def calculate_progress(self, rewards, window):
-        """Рассчитывает прогресс как разницу средних наград между последними и предыдущими эпизодами."""
+        """
+        Рассчитывает прогресс как наклон линейного тренда скользящего среднего.
+        Возвращает угловой коэффициент регрессии.
+        """
         if len(rewards) < window * 2:
-            return 0
-        recent = rewards[-window:]  # последние эпизоды
-        previous = rewards[-window*2:-window]  # эпизоды перед последними
-        return np.mean(recent) - np.mean(previous)
+            return 0.0
+
+        # Берём последние window*2 эпизодов для анализа тренда
+        recent_rewards = rewards[-window * 2:]
+
+        # Вычисляем скользящее среднее
+        moving_avg = []
+        for i in range(len(recent_rewards) - window + 1):
+            moving_avg.append(np.mean(recent_rewards[i:i + window]))
+
+        # Линейная регрессия для скользящего среднего
+        x = np.arange(len(moving_avg))
+        y = np.array(moving_avg)
+
+        # Расчёт наклона линии тренда (коэффициент при x)
+        slope = np.polyfit(x, y, 1)[0]
+
+        return slope
 
     def train_episode(self, episode):
         """Обучает один эпизод и возвращает накопленную награду."""
@@ -189,9 +206,8 @@ class QLearningTrainer:
                 current_q = self._get_q_value(discrete_state, action)
 
                 # Новое Q‑значение по формуле Q‑learning
-                new_q = (
-                    (1 - self.config['LEARNING_RATE']) * current_q +
-                    self.config['LEARNING_RATE'] * (reward + self.config['DISCOUNT'] * max_future_q)
+                new_q = current_q + self.config['LEARNING_RATE'] * (
+                reward + self.config['DISCOUNT'] * max_future_q - current_q
                 )
 
                 # Сохраняем обновлённое значение
