@@ -192,11 +192,19 @@ class QLearningTrainer:
             # Гарантируем, что эпсилон не опустится ниже минимума
             self.config['EPSILON'] = max(self.config['EPSILON'], self.config['MIN_EPSILON'])
 
-    def save_model(self, episode):
-        """Сохраняет текущую Q‑таблицу в файл."""
-        model_path = self.data_path / f"q_table_episode_{episode}.npy"
-        np.save(model_path, self.q_table)
-        print(f"Модель сохранена: {model_path}")
+    def save_model(self, episode, avg_reward):
+        """Сохраняет модель, если средняя награда близка к лучшей."""
+        if not self.aggr_ep_rewards['avg']:  # проверяем, есть ли накопленные данные
+            return
+
+        best_avg = max(self.aggr_ep_rewards['avg'])
+
+        # Сохраняем модели с наградой не менее 95 % от лучшей
+        if avg_reward >= best_avg * 0.95:
+            model_path = self.data_path / f"q_table_best_episode_{episode}_reward_{avg_reward:.2f}.npy"
+            np.save(model_path, self.q_table)
+            print(f"Лучшая модель сохранена: {model_path} (награда: {avg_reward:.2f}, лучшая: {best_avg:.2f})")
+
 
     def log_episode_stats(self, episode, avg_reward, min_reward, max_reward):
         """Логирует статистику эпизода."""
@@ -278,9 +286,10 @@ class QLearningTrainer:
 
                 self.log_episode_stats(episode, avg_reward, min_reward, max_reward)
 
-            # Сохранение модели каждые SAVE_MODEL_EVERY эпизодов
-            if episode % self.config['SAVE_MODEL_EVERY'] == 0:
-                self.save_model(episode)
+            # Сохранение модели каждые SAVE_MODEL_EVERY эпизодов, но только если награда высокая
+            if episode % self.config['SAVE_MODEL_EVERY'] == 0 and len(self.aggr_ep_rewards['avg']) > 0:
+                avg_reward = self.aggr_ep_rewards['avg'][-1]  # берём последнюю среднюю награду
+                self.save_model(episode, avg_reward)
 
             # Проверка условий остановки
             progress = self.calculate_progress(self.ep_rewards, self.config['PROGRESS_WINDOW'])
