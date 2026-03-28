@@ -21,7 +21,7 @@ CONFIG = {
     'EPSILON': 1.0,
     'START_EPSILON_DECAYING': 100,      # Начинаем затухание после 100 эпизодов
     'MIN_EPSILON': 0.05,             # Минимальное значение эпсилона
-    'EPSILON_DECAY_RATE': 0.01,   # Коэффициент экспоненциального затухания (λ)
+    'EPSILON_DECAY_RATE': 0.005,   # Коэффициент экспоненциального затухания (λ)
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [15] * 4,  # CartPole имеет 4 измерения состояния
@@ -41,6 +41,7 @@ CONFIG = {
     # ОГРАНИЧЕНИЕ НА РАЗМЕР Q‑ТАБЛИЦЫ
     'MAX_Q_TABLE_SIZE': 5000,      # Максимальный размер таблицы
     'PRUNE_THRESHOLD': 4000,     # Порог для запуска очистки (80 % от максимума)
+    'PRUNE_TARGET_RATIO': 0.8,   # Доля от максимума после очистки
 }
 
 
@@ -53,10 +54,14 @@ class QLearningTrainer:
         self.ep_rewards = []
         self.aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
         self.epsilons_history = []
+        # Новый атрибут: история размеров Q‑таблицы
+        self.q_table_sizes_history = []
 
         # Оставляем только отслеживание лучшего среднего результата
         self.best_avg_reward = float('-inf')  # Лучшее среднее значение награды
         self.best_avg_model_path = None      # Путь к лучшей модели по среднему
+
+        self.state_visit_count = {}  # Словарь для учёта посещаемости состояний
 
         # Проверяем корректность метода дискретизации
         if self.config['DISCRETIZATION_METHOD'] not in ['linear', 'sigmoid']:
@@ -156,12 +161,11 @@ class QLearningTrainer:
 
         for i in range(window - 1, len(rewards)):
             half = window // 2
-            start_first = max(0, i - window + 1)
-            end_first = start_first + half
-            start_second = end_first
+            start_second = max(0, i - half + 1)
             end_second = i + 1
+            start_first = max(0, start_second - half)
 
-            first_half = rewards[start_first:end_first]
+            first_half = rewards[start_first:start_second]
             second_half = rewards[start_second:end_second]
 
             avg_first = np.mean(first_half) if first_half else 0.0
@@ -170,8 +174,6 @@ class QLearningTrainer:
             progress_values.append(avg_second - avg_first)
 
         return progress_values
-
-
 
 
     def train_episode(self, episode):
@@ -227,6 +229,13 @@ class QLearningTrainer:
                 self._set_q_value(discrete_state, action, 0)
 
             discrete_state = new_discrete_state
+
+            # Учёт посещаемости состояния
+            state_key = discrete_state + (action,)
+            if state_key in self.state_visit_count:
+                self.state_visit_count[state_key] += 1
+            else:
+                self.state_visit_count[state_key] = 1 
 
         env.close()
         return episode_reward
@@ -322,10 +331,44 @@ class QLearningTrainer:
                     return True
         return False
 
+    def prune_q_table(self):
+        """Удаляет наименее важные состояния с учётом Q‑значения и посещаемости."""
+        if len(self.q_table) <= self.config['PRUNE_THRESHOLD']:
+            return
+
+        target_size = int(self.config['MAX_Q_TABLE_SIZE'] * 0.8)
+        to_remove = len(self.q_table) - target_size
+
+        if to_remove <= 0:
+            return
+
+        print(f"Очистка Q‑таблицы: удаляем {to_remove} записей из {len(self.q_table)}")
+
+        # Собираем данные: (ключ, Q‑значение, посещаемость)
+        state_data = []
+        for key, q_val in self.q_table.items():
+            visit_count = self.state_visit_count.get(key, 1)  # по умолчанию 1
+            # Композитный критерий: чем ниже Q и посещаемость, тем приоритетнее удаление
+            priority = q_val * (1 / visit_count)
+            state_data.append((key, priority))
+
+        # Сортируем по приоритету удаления (возрастание)
+        state_data.sort(key=lambda x: x[1])
+
+        # Удаляем наименее важные записи
+        for i in range(to_remove):
+            key_to_remove = state_data[i][0]
+            del self.q_table[key_to_remove]
+            # Удаляем из счётчика посещаемости
+            if key_to_remove in self.state_visit_count:
+                del self.state_visit_count[key_to_remove]
+
+        print(f"Q‑таблица очищена. Новый размер: {len(self.q_table)}")
+
     def plot_training_results(self):
         plt.figure(figsize=(15, 16))
 
-        # График 1: Награды по эпизодам
+        # График 1: Награды по эпизодам (без изменений)
         plt.subplot(4, 1, 1)
         plt.plot(self.aggr_ep_rewards['ep'], self.aggr_ep_rewards['avg'],
                 label='Среднее (скользящее)', color='blue', linewidth=2)
@@ -344,7 +387,7 @@ class QLearningTrainer:
         plt.legend(fontsize=10)
         plt.grid(True, alpha=0.3)
 
-        # График 2: Эпсилон по эпизодам
+        # График 2: Эпсилон по эпизодам (без изменений)
         plt.subplot(4, 1, 2)
         plt.plot(range(len(self.epsilons_history)), self.epsilons_history,
                 color='green', linewidth=2)
@@ -354,24 +397,22 @@ class QLearningTrainer:
         plt.ylabel('Эпсилон', fontsize=12)
         plt.grid(True, alpha=0.3)
 
-        # График 3: Размер Q‑таблицы
+        # График 3: Размер Q‑таблицы — теперь данные синхронизированы
         plt.subplot(4, 1, 3)
+       # Синхронизируем данные: берём размер Q‑таблицы для каждого эпизода в статистике
         episodes_for_stats = self.aggr_ep_rewards['ep']
-        table_sizes = [len(self.q_table) for _ in episodes_for_stats]
+        q_table_sizes = []
+        for ep in episodes_for_stats:
+            # Находим индекс эпизода в истории размеров
+            if ep < len(self.q_table_sizes_history):
+                q_table_sizes.append(self.q_table_sizes_history[ep])
+            else:
+                # Если данных нет, берём последнее доступное значение
+                q_table_sizes.append(self.q_table_sizes_history[-1] if self.q_table_sizes_history else 0)
+        
+        plt.plot(episodes_for_stats, q_table_sizes, color='purple', linewidth=2)
 
-        plt.plot(episodes_for_stats, table_sizes, color='purple', linewidth=2)
-        plt.axhline(y=self.config['PRUNE_THRESHOLD'], color='orange',
-                linestyle=':', linewidth=1.5, label='Порог очистки')
-        plt.axhline(y=self.config['MAX_Q_TABLE_SIZE'], color='red',
-                linestyle='-', linewidth=1.5, label='Максимум')
-        plt.title('Размер Q‑таблицы (число посещённых состояний)',
-                fontsize=14, fontweight='bold')
-        plt.xlabel('Эпизод', fontsize=12)
-        plt.ylabel('Число записей', fontsize=12)
-        plt.legend(fontsize=10)
-        plt.grid(True, alpha=0.3)
-
-        # График 4: Прогресс обучения
+        # График 4: Прогресс обучения (без изменений)
         plt.subplot(4, 1, 4)
         progress_values = self.calculate_progress(
             self.ep_rewards,
@@ -408,6 +449,13 @@ class QLearningTrainer:
             # Обновление эпсилона
             self.update_epsilon(episode)
 
+            # Проверка и очистка Q‑таблицы при достижении порога
+            if len(self.q_table) > self.config['PRUNE_THRESHOLD']:
+                self.prune_q_table()
+
+            # ЗАПИСЬ РАЗМЕРА Q‑ТАБЛИЦЫ ПОСЛЕ КАЖДОГО ЭПИЗОДА
+            self.q_table_sizes_history.append(len(self.q_table))
+
             # Сбор статистики каждые RENDER_EVERY эпизодов
             if episode % self.config['RENDER_EVERY'] == 0 and episode > 0:
                 recent_rewards = self.ep_rewards[-self.config['RENDER_EVERY']:]
@@ -429,9 +477,12 @@ class QLearningTrainer:
 
                     # Сохраняем только если среднее лучше текущего лучшего
                     if avg_reward_scheduled > self.best_avg_reward:
-                        print(f"Сохранение по расписанию (среднее): эпизод {episode}, "
-                    f"средняя награда {avg_reward_scheduled:.2f}")
-                        self.save_top_models(episode, avg_reward_scheduled)  # Вызов внутри блока if
+                        print(
+                            f"Сохранение по расписанию (среднее): эпизод {episode}, "
+                            f"средняя награда {avg_reward_scheduled:.2f}"
+                        )
+
+                        self.save_top_models(episode, avg_reward_scheduled)
 
             # Проверка условий остановки
             progress = self.calculate_progress(self.ep_rewards, self.config['PROGRESS_WINDOW'])
