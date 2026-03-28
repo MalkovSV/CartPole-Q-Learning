@@ -32,7 +32,7 @@ CONFIG = {
     'TARGET_REWARD': 450,
 
     # Сохранение моделей
-    'SAVE_MODEL_EVERY': 120,
+    'SAVE_MODEL_EVERY': 40,
 
     # ПАРАМЕТРЫ ДЛЯ АНАЛИЗА ПРОГРЕССА
     'PROGRESS_WINDOW': 50,         # окно для анализа прогресса
@@ -54,8 +54,9 @@ class QLearningTrainer:
         self.aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
         self.epsilons_history = []
 
-        self.best_reward = float('-inf')
-        self.best_model_path = None
+        # Оставляем только отслеживание лучшего среднего результата
+        self.best_avg_reward = float('-inf')  # Лучшее среднее значение награды
+        self.best_avg_model_path = None      # Путь к лучшей модели по среднему
 
         # Проверяем корректность метода дискретизации
         if self.config['DISCRETIZATION_METHOD'] not in ['linear', 'sigmoid']:
@@ -172,6 +173,7 @@ class QLearningTrainer:
 
 
 
+
     def train_episode(self, episode):
         """Обучает один эпизод и возвращает накопленную награду."""
         render_mode = 'human' if episode % self.config['RENDER_EVERY'] == 0 else None
@@ -247,39 +249,54 @@ class QLearningTrainer:
             self.q_table = pickle.load(f)
         print(f"Модель загружена: {model_path}")
 
+    def load_best_average_model(self):
+        """Загружает лучшую модель по среднему результату."""
+        avg_files = list(self.data_path.glob("best_avg_q_table*.pkl"))
+
+        if not avg_files:
+            print("Нет модели по среднему для загрузки.")
+            return False
+
+        def extract_avg_from_filename(filepath):
+            import re
+            match = re.search(r'_avg_([0-9]+\.[0-9]{2})\.pkl', filepath.name)
+            if match:
+                return float(match.group(1))
+            else:
+                return float('-inf')
+
+        sorted_files = sorted(avg_files, key=extract_avg_from_filename, reverse=True)
+        try:
+            best_avg_path = sorted_files[0]
+            avg_reward = extract_avg_from_filename(best_avg_path)
+
+            # Загружаем модель
+            self.load_model(best_avg_path)
+            self.best_avg_reward = avg_reward
+            self.best_avg_model_path = best_avg_path
+
+            print(f"Загружена лучшая модель по среднему: {best_avg_path.name} (среднее: {avg_reward:.2f})")
+            return True
+        except Exception as e:
+            print(f"Ошибка загрузки лучшей средней модели: {e}")
+            return False
+
+             
+
     def save_top_models(self, episode, avg_reward):
-        """Сохраняет текущую модель и обновляет лучшую модель, если текущая лучше."""
-        # Обновляем лучшую модель только если текущая награда превышает сохранённую лучшую
-        if avg_reward > self.best_reward:
-            self.best_reward = avg_reward
+        """Сохраняет текущую модель, если среднее значение награды лучшее.
 
-            # Не Удаляем старую лучшую модель, если она есть
-            """ if self.best_model_path and self.best_model_path.exists():
-                try:
-                    self.best_model_path.unlink()
-                    print(f"Удалена старая лучшая модель: {self.best_model_path.name}")
-                except OSError as e:
-                    print(f"Не удалось удалить старую лучшую модель {self.best_model_path}: {e}") """
-
-            # Создаём новую лучшую модель
-            best_path = self.data_path / f"best_q_table_episode_{episode}_reward_{avg_reward:.2f}.pkl"
-            with open(best_path, 'wb') as f:
+        Args:
+            episode: номер эпизода
+            avg_reward: среднее значение награды за окно эпизодов
+        """
+        if avg_reward > self.best_avg_reward:
+            self.best_avg_reward = avg_reward
+            avg_path = self.data_path / f"best_avg_q_table_episode_{episode}_avg_{avg_reward:.2f}.pkl"
+            with open(avg_path, 'wb') as f:
                 pickle.dump(self.q_table, f)
-            self.best_model_path = best_path
-            print(f"Новая лучшая модель сохранена: {best_path}")
-
-        # Удаляем все текущие модели, кроме лучшей
-        all_models = [
-            f for f in self.data_path.glob("q_table_*.pkl")
-            if "best" not in f.name
-        ]
-        for model in all_models:
-            try:
-                model.unlink()
-                print(f"Удалена старая модель: {model.name}")
-            except OSError as e:
-                print(f"Не удалось удалить файл {model}: {e}")
-
+            self.best_avg_model_path = avg_path
+            print(f"Новая лучшая модель по среднему: {avg_path} (среднее: {avg_reward:.2f})")
 
     def log_episode_stats(self, episode, avg_reward, min_reward, max_reward):
         """Логирует статистику эпизода."""
@@ -339,16 +356,10 @@ class QLearningTrainer:
 
         # График 3: Размер Q‑таблицы
         plt.subplot(4, 1, 3)
-        episodes_per_stat = self.config['RENDER_EVERY']
-        table_sizes = []
-        for ep in self.aggr_ep_rewards['ep']:
-            # Интерполируем размер таблицы между точками сбора статистики
-            current_size = len(self.q_table)
-            table_sizes.extend([current_size] * episodes_per_stat)
-        # Обрезаем до длины массива наград
-        table_sizes = table_sizes[:len(self.ep_rewards)]
+        episodes_for_stats = self.aggr_ep_rewards['ep']
+        table_sizes = [len(self.q_table) for _ in episodes_for_stats]
 
-        plt.plot(range(len(table_sizes)), table_sizes, color='purple', linewidth=2)
+        plt.plot(episodes_for_stats, table_sizes, color='purple', linewidth=2)
         plt.axhline(y=self.config['PRUNE_THRESHOLD'], color='orange',
                 linestyle=':', linewidth=1.5, label='Порог очистки')
         plt.axhline(y=self.config['MAX_Q_TABLE_SIZE'], color='red',
@@ -387,7 +398,7 @@ class QLearningTrainer:
         plt.show()
 
     def train(self):
-        """Основной цикл обучения с гибридным сохранением моделей."""
+        """Основной цикл обучения с сохранением моделей только по лучшему среднему результату."""
         for episode in range(self.config['EPISODES']):
             # Обучение одного эпизода
             episode_reward = self.train_episode(episode)
@@ -396,12 +407,6 @@ class QLearningTrainer:
 
             # Обновление эпсилона
             self.update_epsilon(episode)
-
-            # 1. СОХРАНЕНИЕ ПРИ НОВОМ РЕКОРДЕ (пиковая награда эпизода)
-            if episode_reward > self.best_reward:
-                print(f"Новый рекорд! Эпизод {episode}: награда {episode_reward:.2f} "
-                    f"(предыдущая лучшая: {self.best_reward:.2f})")
-                self.save_top_models(episode, episode_reward)
 
             # Сбор статистики каждые RENDER_EVERY эпизодов
             if episode % self.config['RENDER_EVERY'] == 0 and episode > 0:
@@ -417,15 +422,16 @@ class QLearningTrainer:
 
                 self.log_episode_stats(episode, avg_reward, min_reward, max_reward)
 
-            # 2. СОХРАНЕНИЕ ПО РАСПИСАНИЮ (контрольные точки)
+            # СОХРАНЕНИЕ ПО РАСПИСАНИЮ (контрольные точки) — только по лучшему среднему
             if episode % self.config['SAVE_MODEL_EVERY'] == 0:
                 if self.aggr_ep_rewards['avg']:  # Проверяем, есть ли накопленные данные
                     avg_reward_scheduled = self.aggr_ep_rewards['avg'][-1]
-                    # Сохраняем только если средняя награда выше текущей лучшей
-                    if avg_reward_scheduled > self.best_reward:
-                        print(f"Сохранение по расписанию: эпизод {episode}, "
-                            f"средняя награда {avg_reward_scheduled:.2f}")
-                        self.save_top_models(episode, avg_reward_scheduled)
+
+                    # Сохраняем только если среднее лучше текущего лучшего
+                    if avg_reward_scheduled > self.best_avg_reward:
+                        print(f"Сохранение по расписанию (среднее): эпизод {episode}, "
+                    f"средняя награда {avg_reward_scheduled:.2f}")
+                        self.save_top_models(episode, avg_reward_scheduled)  # Вызов внутри блока if
 
             # Проверка условий остановки
             progress = self.calculate_progress(self.ep_rewards, self.config['PROGRESS_WINDOW'])
@@ -434,6 +440,7 @@ class QLearningTrainer:
 
         # Построение графиков после завершения обучения
         self.plot_training_results()
+
 
     def _get_discrete_state_linear(self, state):
         """
@@ -453,65 +460,15 @@ class QLearningTrainer:
             discrete_state.append(discrete_val)
         return tuple(discrete_state)
 
-def load_best_model(trainer):
-    """Загружает лучшую модель и обновляет best_reward."""
-    best_files = list(trainer.data_path.glob("best_q_table*.pkl"))
 
-    if not best_files:
-        print("Нет лучшей модели для загрузки. Начинаем обучение с нуля.")
-        return False
-
-    def extract_reward_from_filename(filepath):
-        import re
-        match = re.search(r'_reward_([0-9]+\.[0-9]{2})\.pkl', filepath.name)
-        if match:
-            return float(match.group(1))
-        else:
-            return float('-inf')
-
-    sorted_files = sorted(best_files, key=extract_reward_from_filename, reverse=True)
-    try:
-        best_model_path = sorted_files[0]
-        reward = extract_reward_from_filename(best_model_path)
-
-        # Обновляем состояние тренера
-        trainer.load_model(best_model_path)
-        trainer.best_reward = reward
-        trainer.best_model_path = best_model_path
-
-        print(f"Загружена лучшая модель: {best_model_path.name} (награда: {reward:.2f})")
-        return True
-    except Exception as e:
-        print(f"Ошибка загрузки лучшей модели: {e}")
-        return False
-
-
-    # Сортируем файлы по убыванию награды
-    sorted_files = sorted(
-        best_files,
-        key=extract_reward_from_filename,
-        reverse=True
-    )
-
-    try:
-        best_model_path = sorted_files[0]  # Файл с максимальной наградой
-        trainer.load_model(best_model_path)
-        reward = extract_reward_from_filename(best_model_path)
-        print(f"Загружена лучшая модель: {best_model_path.name} (награда: {reward:.2f})")
-        return True
-    except Exception as e:
-        print(f"Ошибка загрузки лучшей модели: {e}")
-        return False
-          
 # Запуск обучения
 if __name__ == '__main__':
     trainer = QLearningTrainer(CONFIG)
 
-    # Пытаемся загрузить лучшую модель (по награде)
-    if load_best_model(trainer):
-        print("Обучение продолжено с лучшей сохранённой модели.")
+    # Пытаемся загрузить лучшую модель по среднему результату
+    if trainer.load_best_average_model():
+        print("Обучение продолжено с лучшей сохранённой модели (по среднему).")
     else:
         print("Начинаем новое обучение.")
 
     trainer.train()
-    
