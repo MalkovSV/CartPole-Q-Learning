@@ -176,17 +176,15 @@ class QLearningTrainer:
             tanh_values = np.tanh(state[infinite_mask] * 0.2)  # Коэффициент 0.2 для сжатия
             normalized[infinite_mask] = (tanh_values + 1) / 2
 
-        # Дискретизация: умножаем на размер дискретизации и преобразуем в целое
-        discrete_state = (normalized * np.array(self.config['DISCRETE_OS_SIZE'])).astype(np.int_)
-        # Жёсткие границы дискретных значений
-        discrete_state = np.clip(
-            discrete_state,
-            0,
-            np.array(self.config['DISCRETE_OS_SIZE']) - 1
-        )
+        # Дискретизация: обрабатываем каждое измерение отдельно
+        discrete_state = []
+        for i, norm_val in enumerate(normalized):
+            size = self.config['DISCRETE_OS_SIZE'][i]
+            discrete_val = int(norm_val * (size - 1))
+            discrete_val = max(0, min(discrete_val, size - 1))
+            discrete_state.append(discrete_val)
 
         return tuple(discrete_state)
-
 
     def calculate_progress(self, rewards, window):
         """
@@ -392,6 +390,8 @@ class QLearningTrainer:
                     return True
         return False
 
+    
+    
     def prune_q_table(self):
         if len(self.q_table) <= self.config['PRUNE_THRESHOLD']:
             return
@@ -402,34 +402,71 @@ class QLearningTrainer:
         if to_remove <= 0:
             return
 
-        print(f"Очистка Q‑таблицы: удаляем {to_remove} записей из {len(self.q_table)}")
+        # Адаптивное ограничение: не более 25 % или 1000 записей (выбираем меньшее)
+        max_remove_per_call = min(len(self.q_table) // 4, 1000)
+        to_remove = min(to_remove, max_remove_per_call)
 
-        # Собираем данные: (ключ, Q‑значение, посещаемость, время последнего посещения)
+
+        print(f"Очистка Q‑таблицы: удаляем {to_remove} записей из {len(self.q_table)} "
+            f"(максимум {max_remove_per_call} за проход, целевой размер: {target_size})")
+
+        # Собираем данные: (ключ, посещаемость, Q‑значение)
         state_data = []
-        current_episode = len(self.ep_rewards)
+        if not self.q_table:  # Защита от пустой таблицы
+            return
 
-        for key, q_val in self.q_table.items():
+        q_values = list(self.q_table.values())
+        min_q, max_q = min(q_values), max(q_values)
+        q_range = max_q - min_q if max_q != min_q else 1.0
+
+        for key in self.q_table.keys():
             visit_count = self.state_visit_count.get(key, 1)
-            last_visited = self.state_last_visited.get(key, current_episode)  # <-- ИЗМЕНИТЬ: использовать current_episode как запасное значение
-            time_since_last = current_episode - last_visited
+            q_value = self.q_table[key]
 
-            # Композитный критерий: чем ниже Q, посещаемость и новее состояние, тем приоритетнее удаление
-            priority = q_val * (1 / visit_count) * (1 + time_since_last * 0.1)
-            state_data.append((key, priority))
+            # Нормализуем Q‑значение в [0, 1]
+            normalized_q = (q_value - min_q) / q_range
 
-        # Сортируем по приоритету удаления (возрастание)
+            # Приоритет удаления: чем ниже посещаемость и Q‑значение, тем выше приоритет
+            # Веса: посещаемость — 70 %, Q‑значение — 30 %
+            # Ограничиваем влияние очень малых visit_count
+            stable_visit = max(visit_count, 10)  # Минимум 10 для стабильности
+            removal_priority = (
+                (1 / stable_visit) * 0.7 +  # Обратная посещаемость с ограничением
+                (1 - normalized_q) * 0.3     # Обратное нормализованное Q‑значение
+            )
+            state_data.append((key, removal_priority, visit_count, q_value))
+
+        # Сортируем по приоритету удаления (возрастание — сначала наименее важные)
         state_data.sort(key=lambda x: x[1])
 
-        # Удаляем наименее важные записи
-        for i in range(to_remove):
-            key_to_remove = state_data[i][0]
-            del self.q_table[key_to_remove]
-            if key_to_remove in self.state_visit_count:
-                del self.state_visit_count[key_to_remove]
-            if key_to_remove in self.state_last_visited:  # <-- ДОБАВИТЬ ПРОВЕРКУ
-                del self.state_last_visited[key_to_remove]
+        # Удаляем наименее важные записи и собираем статистику
+        removed_count = 0
+        total_visit = 0.0
+        total_q = 0.0
 
-        print(f"Q‑таблица очищена. Новый размер: {len(self.q_table)}")
+        for key, priority, visit, q_val in state_data[:to_remove]:
+            try:
+                del self.q_table[key]
+                # Удаляем связанные данные, если они существуют
+                if key in self.state_visit_count:
+                    del self.state_visit_count[key]
+                if key in self.state_last_visited:
+                    del self.state_last_visited[key]
+
+                removed_count += 1
+                total_visit += visit
+                total_q += q_val
+            except KeyError:
+                continue
+
+        # Логирование статистики удалённых записей
+        if removed_count > 0:
+            avg_visit = total_visit / removed_count
+            avg_q = total_q / removed_count
+            print(f"Статистика удалённых: средняя посещаемость = {avg_visit:.1f}, "
+                f"средний Q‑value = {avg_q:.3f}")
+
+        print(f"Q‑таблица очищена. Удалено: {removed_count}, новый размер: {len(self.q_table)}")
 
     def plot_training_results(self):
         plt.figure(figsize=(15, 16))
