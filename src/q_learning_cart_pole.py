@@ -40,9 +40,9 @@ CONFIG = {
     'PROGRESS_THRESHOLD': 0.05,    # порог для адаптации
 
     # ОГРАНИЧЕНИЕ НА РАЗМЕР Q‑ТАБЛИЦЫ
-    'PRUNE_THRESHOLD': 3000,        # Запускать очистку при 3000 записях
-    'MAX_Q_TABLE_SIZE': 4000,       # Максимальный размер — 4000
-    'PRUNE_TARGET_RATIO': 0.8,      # Оставлять 80 % от максимума
+    'PRUNE_THRESHOLD': 4500,        # Запускать очистку при 3000 записях
+    'MAX_Q_TABLE_SIZE': 5000,       # Максимальный размер — 4000
+    'PRUNE_TARGET_RATIO': 0.75,      # Оставлять 80 % от максимума
 
     'ENABLE_PRUNE_LOGGING': False,  # По умолчанию — вывод выключён
 }
@@ -379,25 +379,24 @@ class QLearningTrainer:
             f"Q‑table size: {len(self.q_table)}")
 
     def should_stop_training(self, progress):
-        if len(self.ep_rewards) >= self.config['PROGRESS_WINDOW']:
-            current_progress = progress[-1] if isinstance(progress, list) else progress
+        if len(self.ep_rewards) < self.config['PROGRESS_WINDOW']:
+            return False
 
-            if self.aggr_ep_rewards['avg']:  # Проверяем наличие данных
-                if (current_progress < self.config['PROGRESS_THRESHOLD'] and
-                    self.aggr_ep_rewards['avg'][-1] >= self.config['TARGET_REWARD']):
-                    print(f"Цель достигнута на эпизоде {len(self.ep_rewards)}! Обучение завершено.")
-                    return True
+        current_progress = progress[-1] if isinstance(progress, list) else progress
 
-                if (self.config['EPSILON'] <= self.config['MIN_EPSILON'] + 1e-6 and
-                    current_progress < self.config['PROGRESS_THRESHOLD'] / 2 and
-                    len(self.ep_rewards) > self.config['START_EPSILON_DECAYING'] + self.config['PROGRESS_WINDOW']):
-                    print(f"Обучение стабилизировалось на эпизоде {len(self.ep_rewards)}. Остановка.")
-                    return True
+        if self.aggr_ep_rewards['avg']:
+            if (current_progress < self.config['PROGRESS_THRESHOLD'] and
+                self.aggr_ep_rewards['avg'][-1] >= self.config['TARGET_REWARD']):
+                print(f"Цель достигнута на эпизоде {len(self.ep_rewards)}! Обучение завершено.")
+                return True
+
+            if (self.config['EPSILON'] <= self.config['MIN_EPSILON'] + 1e-6 and
+                current_progress < self.config['PROGRESS_THRESHOLD'] / 2 and
+                len(self.ep_rewards) > self.config['START_EPSILON_DECAYING'] + self.config['PROGRESS_WINDOW']):
+                print(f"Обучение стабилизировалось на эпизоде {len(self.ep_rewards)}. Остановка.")
+                return True
         return False
 
-    
-   
-   
     def prune_q_table(self):
         current_size = len(self.q_table)
 
@@ -553,7 +552,7 @@ class QLearningTrainer:
 
         # График 3: Размер Q‑таблицы — исправленная версия
         plt.subplot(4, 1, 3)
-        all_episodes = list(range(len(self.q_table_sizes_history)))  # Исправлено: убрана лишняя скобка
+        all_episodes = list(range(len(self.q_table_sizes_history)))
         q_sizes = self.q_table_sizes_history
 
         plt.plot(all_episodes, q_sizes, color='purple', linewidth=2, alpha=0.8)
@@ -692,7 +691,6 @@ class QLearningTrainer:
         if not self.config.get('ENABLE_PRUNE_LOGGING', True):
             return  # Выходим, если вывод отключён
 
-
         print("\n" + "=" * 80)
         print("ПОЛНАЯ Q‑ТАБЛИЦА (состояние, действие) → Q‑value, посещаемость")
         print("=" * 80)
@@ -701,35 +699,35 @@ class QLearningTrainer:
             print("Q‑таблица пуста.")
             return
 
-            # Создаём список кортежей (ключ, Q‑значение, посещаемость) для сортировки
-            table_data = []
-            for key, q_value in self.q_table.items():
-                visit_count = self.state_visit_count.get(key, 0)  # Получаем посещаемость, если есть
-                table_data.append((key, q_value, visit_count))
+        # Создаём список кортежей (ключ, Q‑значение, посещаемость) для сортировки
+        table_data = []
+        for key, q_value in self.q_table.items():
+            visit_count = self.state_visit_count.get(key, 0)  # Получаем посещаемость, если есть
+            table_data.append((key, q_value, visit_count))
 
-            # Сортируем по убыванию Q‑значения
-            sorted_table = sorted(table_data, key=lambda x: x[1], reverse=True)
+        # Сортируем по убыванию Q‑значения
+        sorted_table = sorted(table_data, key=lambda x: x[1], reverse=True)
 
-            # Выводим первые 50 записей (чтобы не перегружать вывод)
-            max_display = 20
-            count = 0
-            for key, q_value, visit_count in sorted_table:
-                if count >= max_display:
-                    break
-                state_action = key[:-1]  # Состояние (все элементы кроме последнего)
-                action = key[-1]          # Действие (последний элемент)
-                print(f"Состояние: {state_action}, Действие: {action} → Q‑value: {q_value:.4f}, Посещаемость: {visit_count}")
-                count += 1
+        # Выводим первые 50 записей (чтобы не перегружать вывод)
+        max_display = 20
+        count = 0
+        for key, q_value, visit_count in sorted_table:
+            if count >= max_display:
+                break
+            state_action = key[:-1]  # Состояние (все элементы кроме последнего)
+            action = key[-1]          # Действие (последний элемент)
+            print(f"Состояние: {state_action}, Действие: {action} → Q‑value: {q_value:.4f}, Посещаемость: {visit_count}")
+            count += 1
 
-            # Если записей больше, чем выведено, сообщаем об этом
-            if len(sorted_table) > max_display:
-                print(f"\n... и ещё {len(sorted_table) - max_display} записей (всего: {len(sorted_table)})")
+        # Если записей больше, чем выведено, сообщаем об этом
+        if len(sorted_table) > max_display:
+            print(f"\n... и ещё {len(sorted_table) - max_display} записей (всего: {len(sorted_table)})")
 
-            print(f"\nВсего записей в Q‑таблице: {len(self.q_table)}")
-            print(f"Уникальных состояний: {len(set(key[:-1] for key in self.q_table.keys()))}")
-            print(f"Среднее Q‑значение: {np.mean([v for v in self.q_table.values()]):.4f}")
-            print(f"Максимальное Q‑значение: {max(self.q_table.values()):.4f}")
-            print(f"Минимальное Q‑значение: {min(self.q_table.values()):.4f}")
+        print(f"\nВсего записей в Q‑таблице: {len(self.q_table)}")
+        print(f"Уникальных состояний: {len(set(key[:-1] for key in self.q_table.keys()))}")
+        print(f"Среднее Q‑значение: {np.mean([v for v in self.q_table.values()]):.4f}")
+        print(f"Максимальное Q‑значение: {max(self.q_table.values()):.4f}")
+        print(f"Минимальное Q‑значение: {min(self.q_table.values()):.4f}")
 
 
 # Запуск обучения
