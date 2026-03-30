@@ -6,22 +6,23 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pickle
 from functools import lru_cache
+import heapq
 
 # КОНФИГУРАЦИЯ — все параметры в одном месте
 CONFIG = {
     # Основные параметры обучения
-    'EPISODES': 1000,
+    'EPISODES': 2000,
     'RENDER_EVERY': 20,
 
     # Параметры Q‑learning
-    'LEARNING_RATE': 0.1,
-    'DISCOUNT': 0.95,
+    'LEARNING_RATE': 0.05,
+    'DISCOUNT': 0.99,
 
     # ε‑жадная стратегия
     'EPSILON': 1.0,
-    'START_EPSILON_DECAYING': 10,      # Начинаем затухание после 100 эпизодов
-    'MIN_EPSILON': 0.01,             # Минимальное значение эпсилона
-    'EPSILON_DECAY_RATE': 0.005,   # Коэффициент экспоненциального затухания (λ)
+    'START_EPSILON_DECAYING': 100,      # Начинаем затухание после 100 эпизодов
+    'MIN_EPSILON': 0.05,             # Минимальное значение эпсилона
+    'EPSILON_DECAY_RATE': 0.002,   # Коэффициент экспоненциального затухания (λ)
 
     # Дискретизация пространства состояний
     'DISCRETE_OS_SIZE': [20] * 4,  # CartPole имеет 4 измерения состояния
@@ -35,13 +36,13 @@ CONFIG = {
     'SAVE_MODEL_EVERY': 20,
 
     # ПАРАМЕТРЫ ДЛЯ АНАЛИЗА ПРОГРЕССА
-    'PROGRESS_WINDOW': 20,         # окно для анализа прогресса
-    'PROGRESS_THRESHOLD': 0.1,    # порог для адаптации
+    'PROGRESS_WINDOW': 50,         # окно для анализа прогресса
+    'PROGRESS_THRESHOLD': 0.05,    # порог для адаптации
 
     # ОГРАНИЧЕНИЕ НА РАЗМЕР Q‑ТАБЛИЦЫ
-    'MAX_Q_TABLE_SIZE': 6000,      # Максимальный размер таблицы
-    'PRUNE_THRESHOLD': 5000,     # Порог для запуска очистки (80 % от максимума)
-    'PRUNE_TARGET_RATIO': 0.7,   # Доля от максимума после очистки
+    'PRUNE_THRESHOLD': 3000,        # Запускать очистку при 1500 записях
+    'MAX_Q_TABLE_SIZE': 4000,       # Максимальный размер — 2000
+    'PRUNE_TARGET_RATIO': 0.8       # Оставлять 80 % от максимума
 }
 
 
@@ -126,7 +127,7 @@ class QLearningTrainer:
             low = self.observation_low[i]
             high = self.observation_high[i]
 
-            # Защита от нулевого диапазона с небольшим допуском
+            # Защита от нулевого диапазона
             if abs(high - low) < 1e-6:
                 discrete_val = 0
             else:
@@ -134,12 +135,14 @@ class QLearningTrainer:
                 normalized = (val - low) / (high - low)
                 normalized = np.clip(normalized, 0.0, 1.0)
 
-                # Дискретизация с округлением вместо усечения
-                discrete_val = int(round(normalized * (self.config['DISCRETE_OS_SIZE'][i] - 1)))
+                # Дискретизация с floor вместо round
+                discrete_val = int(np.floor(normalized * self.config['DISCRETE_OS_SIZE'][i]))
+                # Ограничение диапазона: 0 ≤ discrete_val ≤ DISCRETE_OS_SIZE[i] - 1
                 discrete_val = max(0, min(discrete_val, self.config['DISCRETE_OS_SIZE'][i] - 1))
 
             discrete_state.append(discrete_val)
         return tuple(discrete_state)
+
 
     def get_discrete_state_sigmoid(self, state_tuple):
         """
@@ -199,16 +202,16 @@ class QLearningTrainer:
             Список значений прогресса той же длины, что и rewards.
             Для первых (window-1) эпизодов прогресс = 0.0.
         """
+        # Убедимся, что окно чётное — иначе разделение на половины некорректно
+        if window % 2 != 0:
+            raise ValueError("window должен быть чётным числом для корректного разделения на половины")
+
         if len(rewards) < window:
             return [0.0] * len(rewards)
 
         progress_values = [0.0] * (window - 1)  # Первые (window-1) значений — нули
         half = window // 2
-
-        # Убедимся, что окно чётное — иначе разделение на половины некорректно
-        if window % 2 != 0:
-            raise ValueError("window должен быть чётным числом для корректного разделения на половины")
-
+        
         for i in range(window - 1, len(rewards)):
             # Вторая половина: последние 'half' эпизодов в текущем окне
             # Индексы: от (i - half + 1) до i (включительно)
@@ -391,82 +394,123 @@ class QLearningTrainer:
         return False
 
     
-    
+   
+   
     def prune_q_table(self):
-        if len(self.q_table) <= self.config['PRUNE_THRESHOLD']:
+        current_size = len(self.q_table)
+
+        # Проверяем, нужно ли выполнять очистку по размеру таблицы
+        if current_size <= self.config['PRUNE_THRESHOLD']:
+            print(f"Очистка не требуется: текущий размер {current_size} <= порог {self.config['PRUNE_THRESHOLD']}")
             return
 
+        # Рассчитываем прогресс обучения
+        progress_values = self.calculate_progress(
+            self.ep_rewards,
+            self.config['PROGRESS_WINDOW']
+        )
+
+        # Если недостаточно данных для расчёта прогресса или прогресс положительный, пропускаем очистку
+        if (len(progress_values) < self.config['PROGRESS_WINDOW'] or
+                progress_values[-1] > self.config['PROGRESS_THRESHOLD']):
+            """ print(f"Пропуск очистки: текущий прогресс {progress_values[-1]:.3f} "
+                f"> порог {self.config['PROGRESS_THRESHOLD']}. Обучение прогрессирует.") """
+            return
+
+        # Рассчитываем целевой размер после очистки
         target_size = int(self.config['MAX_Q_TABLE_SIZE'] * self.config['PRUNE_TARGET_RATIO'])
-        to_remove = len(self.q_table) - target_size
+        to_remove_total = max(0, current_size - target_size)
 
-        if to_remove <= 0:
+        if to_remove_total <= 0:
             return
 
-        # Адаптивное ограничение: не более 25 % или 1000 записей (выбираем меньшее)
-        max_remove_per_call = min(len(self.q_table) // 4, 1000)
-        to_remove = min(to_remove, max_remove_per_call)
+        print(f"Запуск очистки Q‑таблицы: нужно удалить {to_remove_total} записей из {current_size}")
+        print(f"Целевой размер после очистки: {target_size}")
 
-
-        print(f"Очистка Q‑таблицы: удаляем {to_remove} записей из {len(self.q_table)} "
-            f"(максимум {max_remove_per_call} за проход, целевой размер: {target_size})")
-
-        # Собираем данные: (ключ, посещаемость, Q‑значение)
-        state_data = []
-        if not self.q_table:  # Защита от пустой таблицы
-            return
-
-        q_values = list(self.q_table.values())
-        min_q, max_q = min(q_values), max(q_values)
-        q_range = max_q - min_q if max_q != min_q else 1.0
+        # Создаём список записей с их приоритетами сохранения
+        records_with_priority = []
+        current_episode = len(self.ep_rewards)
 
         for key in self.q_table.keys():
             visit_count = self.state_visit_count.get(key, 1)
             q_value = self.q_table[key]
+            last_visited = self.state_last_visited.get(key, 0)
 
-            # Нормализуем Q‑значение в [0, 1]
-            normalized_q = (q_value - min_q) / q_range
-
-            # Приоритет удаления: чем ниже посещаемость и Q‑значение, тем выше приоритет
-            # Веса: посещаемость — 70 %, Q‑значение — 30 %
-            # Ограничиваем влияние очень малых visit_count
-            stable_visit = max(visit_count, 10)  # Минимум 10 для стабильности
-            removal_priority = (
-                (1 / stable_visit) * 0.7 +  # Обратная посещаемость с ограничением
-                (1 - normalized_q) * 0.3     # Обратное нормализованное Q‑значение
+            # Приоритет сохранения (чем выше, тем важнее сохранить)
+            preservation_priority = (
+                np.log(visit_count) * 0.3 +  # Логарифм посещаемости
+                q_value * 0.6 +             # Вес Q‑значения
+                (current_episode - last_visited) * (-0.1)  # Время последнего посещения
             )
-            state_data.append((key, removal_priority, visit_count, q_value))
+            records_with_priority.append((preservation_priority, key, visit_count, q_value, last_visited))
 
-        # Сортируем по приоритету удаления (возрастание — сначала наименее важные)
-        state_data.sort(key=lambda x: x[1])
+        # Сортируем по приоритету сохранения (убывание) — наименее важные в конце
+        records_with_priority.sort(key=lambda x: x[0], reverse=True)
 
-        # Удаляем наименее важные записи и собираем статистику
+        # Определяем ключи для удаления: последние N записей в отсортированном списке
+        keys_to_remove = [record[1] for record in records_with_priority[-to_remove_total:]]
+
+        # ВЫВОД ЗАПИСЕЙ, КОТОРЫЕ БУДУТ УДАЛЕНЫ
+        print("\n" + "=" * 90)
+        print("ЗАПИСИ, ПОДЛЕЖАЩИЕ УДАЛЕНИЮ (сортировка по приоритету удаления — от наименее важных):")
+        print("=" * 90)
+        print(f"{'№':<3} {'Состояние':<20} {'Действие':<8} {'Q‑value':<10} {'Посещ.':<8} {'Послед. посещ.':<12} {'Приоритет':<10}")
+        print("-" * 90)
+
         removed_count = 0
         total_visit = 0.0
         total_q = 0.0
+        total_priority = 0.0
 
-        for key, priority, visit, q_val in state_data[:to_remove]:
+        # Показываем до 30 записей для обзора (или все, если их меньше)
+        show_limit = min(100, len(keys_to_remove))
+        for i, key in enumerate(keys_to_remove[:show_limit], 1):
+            state_action = key[:-1]
+            action = key[-1]
+            visit_count = self.state_visit_count.get(key, 0)
+            q_value = self.q_table.get(key, 0.0)
+            last_visited = self.state_last_visited.get(key, 0)
+
+            # Находим приоритет этой записи для вывода
+            priority = next(
+                record[0] for record in records_with_priority
+                if record[1] == key
+            )
+
+            print(f"{i:<3} {str(state_action):<20} {action:<8} {q_value:<10.4f} {visit_count:<8} {last_visited:<12} {priority:<10.4f}")
+
+
+            total_visit += visit_count
+            total_q += q_value
+            total_priority += priority
+            removed_count += 1
+
+        if len(keys_to_remove) > show_limit:
+            print(f"... и ещё {len(keys_to_remove) - show_limit} записей.")
+
+        print("-" * 90)
+
+        # Статистика по удаляемым записям
+        avg_visit = total_visit / removed_count if removed_count > 0 else 0
+        avg_q = total_q / removed_count if removed_count > 0 else 0
+        avg_priority = total_priority / removed_count if removed_count > 0 else 0
+
+        print(f"Статистика по удаляемым: средняя посещаемость = {avg_visit:.1f}, "
+            f"средний Q‑value = {avg_q:.4f}, средний приоритет = {avg_priority:.4f}")
+        print(f"Всего будет удалено: {len(keys_to_remove)} записей")
+
+        # Фактическое удаление записей
+        for key in keys_to_remove:
             try:
                 del self.q_table[key]
-                # Удаляем связанные данные, если они существуют
                 if key in self.state_visit_count:
                     del self.state_visit_count[key]
                 if key in self.state_last_visited:
                     del self.state_last_visited[key]
-
-                removed_count += 1
-                total_visit += visit
-                total_q += q_val
             except KeyError:
                 continue
 
-        # Логирование статистики удалённых записей
-        if removed_count > 0:
-            avg_visit = total_visit / removed_count
-            avg_q = total_q / removed_count
-            print(f"Статистика удалённых: средняя посещаемость = {avg_visit:.1f}, "
-                f"средний Q‑value = {avg_q:.3f}")
-
-        print(f"Q‑таблица очищена. Удалено: {removed_count}, новый размер: {len(self.q_table)}")
+        print(f"Q‑таблица очищена. Новый размер: {len(self.q_table)}")
 
     def plot_training_results(self):
         plt.figure(figsize=(15, 16))
@@ -502,22 +546,29 @@ class QLearningTrainer:
 
         # График 3: Размер Q‑таблицы — исправленная версия
         plt.subplot(4, 1, 3)
-        episodes_for_stats = self.aggr_ep_rewards['ep']
-        q_table_sizes = []
+        all_episodes = list(range(len(self.q_table_sizes_history)))  # Исправлено: убрана лишняя скобка
+        q_sizes = self.q_table_sizes_history
 
-        for episode_num in episodes_for_stats:
-            if episode_num < len(self.q_table_sizes_history):
-                q_table_sizes.append(self.q_table_sizes_history[episode_num])
-            else:
-                if self.q_table_sizes_history:
-                    q_table_sizes.append(self.q_table_sizes_history[-1])
-                else:
-                    q_table_sizes.append(0)
+        plt.plot(all_episodes, q_sizes, color='purple', linewidth=2, alpha=0.8)
 
-        plt.plot(episodes_for_stats, q_table_sizes, color='purple', linewidth=2)
+        # Создаём корректные данные для scatter-графика: берём эпизоды и соответствующие размеры Q‑таблицы
+        scatter_episodes = []
+        scatter_sizes = []
+
+        for ep in self.aggr_ep_rewards['ep']:
+            if ep < len(self.q_table_sizes_history):  # Проверяем, что эпизод не выходит за границы истории
+                scatter_episodes.append(ep)
+                scatter_sizes.append(self.q_table_sizes_history[ep])
+
+        # Отрисовываем точки статистики
+        if scatter_episodes:  # Проверяем, что есть данные для отображения
+            plt.scatter(scatter_episodes, scatter_sizes,
+                    color='red', s=50, zorder=5, label='Точки статистики')
+
         plt.title('Размер Q‑таблицы по эпизодам', fontsize=14, fontweight='bold')
         plt.xlabel('Эпизод', fontsize=12)
         plt.ylabel('Размер Q‑таблицы', fontsize=12)
+        plt.legend()
         plt.grid(True, alpha=0.3)
 
         # График 4: Прогресс обучения
@@ -578,6 +629,18 @@ class QLearningTrainer:
 
                 self.log_episode_stats(episode, avg_reward, min_reward, max_reward)
 
+                # В цикле обучения, после завершения эпизода и расчёта avg_reward
+                if avg_reward < 50 and episode % 20 == 0:
+                    print(f"\n{'='*120}")
+                    print(f"ОТЛАДКА: НИЗКИЙ REWARD НА ЭПИЗОДЕ {episode}")
+                    print(f"Средний reward = {avg_reward:.2f}, размер Q‑таблицы = {len(self.q_table)}")
+                    print(f"{'='*120}")
+
+                    # Выводим структурированную Q‑таблицу (первые 20 состояний, отсортированных по Q‑value)
+                    self.print_q_table_full()
+
+                    print(f"{'-'*120}\n")
+
                 # СОХРАНЕНИЕ ПРИ УЛУЧШЕНИИ СРЕДНЕГО РЕЗУЛЬТАТА
                 if avg_reward > self.best_avg_reward:
                     self.best_avg_reward = avg_reward
@@ -587,6 +650,27 @@ class QLearningTrainer:
                     self.best_avg_model_path = avg_path
                     print(f"✅ Новая лучшая модель: эпизод {episode}, среднее: {avg_reward:.2f}")
 
+            # Логирование прогресса каждые 100 эпизодов
+            if episode % 100 == 0:
+                # Рассчитываем прогресс с учётом окна анализа
+                progress_values = self.calculate_progress(
+                    self.ep_rewards,
+                    self.config['PROGRESS_WINDOW']
+                )
+
+                # Проверяем, достаточно ли данных для расчёта прогресса
+                if len(progress_values) >= self.config['PROGRESS_WINDOW']:
+                    current_progress = progress_values[-1]
+                    progress_status = "ПРОГРЕСС" if current_progress > self.config['PROGRESS_THRESHOLD'] else "СТАБИЛЬНО"
+
+                    print(f"📊 Прогресс на эпизоде {episode}: {current_progress:.3f} "
+                        f"({progress_status}) | Порог: {self.config['PROGRESS_THRESHOLD']:.3f}")
+                else:
+                    # Если данных недостаточно, выводим сообщение
+                    remaining_episodes = self.config['PROGRESS_WINDOW'] - len(progress_values)
+                    print(f"⏱️  Ожидание данных для расчёта прогресса: "
+                        f"нужно ещё {remaining_episodes} эпизодов")
+
             # Проверка условий остановки
             progress = self.calculate_progress(self.ep_rewards, self.config['PROGRESS_WINDOW'])
             if self.should_stop_training(progress):
@@ -594,6 +678,46 @@ class QLearningTrainer:
 
         # Построение графиков после завершения обучения
         self.plot_training_results()
+
+    def print_q_table_full(self):
+        """Выводит все записи Q‑таблицы с посещаемостью и значениями, отсортированные по Q‑value."""
+        print("\n" + "=" * 80)
+        print("ПОЛНАЯ Q‑ТАБЛИЦА (состояние, действие) → Q‑value, посещаемость")
+        print("=" * 80)
+
+        if not self.q_table:
+            print("Q‑таблица пуста.")
+            return
+
+        # Создаём список кортежей (ключ, Q‑значение, посещаемость) для сортировки
+        table_data = []
+        for key, q_value in self.q_table.items():
+            visit_count = self.state_visit_count.get(key, 0)  # Получаем посещаемость, если есть
+            table_data.append((key, q_value, visit_count))
+
+        # Сортируем по убыванию Q‑значения
+        sorted_table = sorted(table_data, key=lambda x: x[1], reverse=True)
+
+        # Выводим первые 50 записей (чтобы не перегружать вывод)
+        max_display = 20
+        count = 0
+        for key, q_value, visit_count in sorted_table:
+            if count >= max_display:
+                break
+            state_action = key[:-1]  # Состояние (все элементы кроме последнего)
+            action = key[-1]          # Действие (последний элемент)
+            print(f"Состояние: {state_action}, Действие: {action} → Q‑value: {q_value:.4f}, Посещаемость: {visit_count}")
+            count += 1
+
+        # Если записей больше, чем выведено, сообщаем об этом
+        if len(sorted_table) > max_display:
+            print(f"\n... и ещё {len(sorted_table) - max_display} записей (всего: {len(sorted_table)})")
+
+        print(f"\nВсего записей в Q‑таблице: {len(self.q_table)}")
+        print(f"Уникальных состояний: {len(set(key[:-1] for key in self.q_table.keys()))}")
+        print(f"Среднее Q‑значение: {np.mean([v for v in self.q_table.values()]):.4f}")
+        print(f"Максимальное Q‑значение: {max(self.q_table.values()):.4f}")
+        print(f"Минимальное Q‑значение: {min(self.q_table.values()):.4f}")
 
 
 # Запуск обучения
