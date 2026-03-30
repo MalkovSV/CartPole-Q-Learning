@@ -11,7 +11,7 @@ import heapq
 # КОНФИГУРАЦИЯ — все параметры в одном месте
 CONFIG = {
     # Основные параметры обучения
-    'EPISODES': 2000,
+    'EPISODES': 1600,
     'RENDER_EVERY': 20,
 
     # Параметры Q‑learning
@@ -40,9 +40,11 @@ CONFIG = {
     'PROGRESS_THRESHOLD': 0.05,    # порог для адаптации
 
     # ОГРАНИЧЕНИЕ НА РАЗМЕР Q‑ТАБЛИЦЫ
-    'PRUNE_THRESHOLD': 3000,        # Запускать очистку при 1500 записях
-    'MAX_Q_TABLE_SIZE': 4000,       # Максимальный размер — 2000
-    'PRUNE_TARGET_RATIO': 0.8       # Оставлять 80 % от максимума
+    'PRUNE_THRESHOLD': 3000,        # Запускать очистку при 3000 записях
+    'MAX_Q_TABLE_SIZE': 4000,       # Максимальный размер — 4000
+    'PRUNE_TARGET_RATIO': 0.8,      # Оставлять 80 % от максимума
+
+    'ENABLE_PRUNE_LOGGING': False,  # По умолчанию — вывод выключён
 }
 
 
@@ -401,7 +403,8 @@ class QLearningTrainer:
 
         # Проверяем, нужно ли выполнять очистку по размеру таблицы
         if current_size <= self.config['PRUNE_THRESHOLD']:
-            print(f"Очистка не требуется: текущий размер {current_size} <= порог {self.config['PRUNE_THRESHOLD']}")
+            if self.config.get('ENABLE_PRUNE_LOGGING', True):
+                print(f"Очистка не требуется: текущий размер {current_size} <= порог {self.config['PRUNE_THRESHOLD']}")
             return
 
         # Рассчитываем прогресс обучения
@@ -413,8 +416,9 @@ class QLearningTrainer:
         # Если недостаточно данных для расчёта прогресса или прогресс положительный, пропускаем очистку
         if (len(progress_values) < self.config['PROGRESS_WINDOW'] or
                 progress_values[-1] > self.config['PROGRESS_THRESHOLD']):
-            """ print(f"Пропуск очистки: текущий прогресс {progress_values[-1]:.3f} "
-                f"> порог {self.config['PROGRESS_THRESHOLD']}. Обучение прогрессирует.") """
+            if self.config.get('ENABLE_PRUNE_LOGGING', True):
+                print(f"Пропуск очистки: текущий прогресс {progress_values[-1]:.3f} "
+                    f"> порог {self.config['PROGRESS_THRESHOLD']}. Обучение прогрессирует.")
             return
 
         # Рассчитываем целевой размер после очистки
@@ -424,8 +428,9 @@ class QLearningTrainer:
         if to_remove_total <= 0:
             return
 
-        print(f"Запуск очистки Q‑таблицы: нужно удалить {to_remove_total} записей из {current_size}")
-        print(f"Целевой размер после очистки: {target_size}")
+        if self.config.get('ENABLE_PRUNE_LOGGING', True):
+            print(f"Запуск очистки Q‑таблицы: нужно удалить {to_remove_total} записей из {current_size}")
+            print(f"Целевой размер после очистки: {target_size}")
 
         # Создаём список записей с их приоритетами сохранения
         records_with_priority = []
@@ -451,53 +456,54 @@ class QLearningTrainer:
         keys_to_remove = [record[1] for record in records_with_priority[-to_remove_total:]]
 
         # ВЫВОД ЗАПИСЕЙ, КОТОРЫЕ БУДУТ УДАЛЕНЫ
-        print("\n" + "=" * 90)
-        print("ЗАПИСИ, ПОДЛЕЖАЩИЕ УДАЛЕНИЮ (сортировка по приоритету удаления — от наименее важных):")
-        print("=" * 90)
-        print(f"{'№':<3} {'Состояние':<20} {'Действие':<8} {'Q‑value':<10} {'Посещ.':<8} {'Послед. посещ.':<12} {'Приоритет':<10}")
-        print("-" * 90)
+        if self.config.get('ENABLE_PRUNE_LOGGING', True):
+            print("\n" + "=" * 90)
+            print("ЗАПИСИ, ПОДЛЕЖАЩИЕ УДАЛЕНИЮ (сортировка по приоритету удаления — от наименее важных):")
+            print("=" * 90)
+            print(f"{'№':<3} {'Состояние':<20} {'Действие':<8} {'Q‑value':<10} {'Посещ.':<8} {'Послед. посещ.':<12} {'Приоритет':<10}")
+            print("-" * 90)
 
-        removed_count = 0
-        total_visit = 0.0
-        total_q = 0.0
-        total_priority = 0.0
+            removed_count = 0
+            total_visit = 0.0
+            total_q = 0.0
+            total_priority = 0.0
 
-        # Показываем до 30 записей для обзора (или все, если их меньше)
-        show_limit = min(100, len(keys_to_remove))
-        for i, key in enumerate(keys_to_remove[:show_limit], 1):
-            state_action = key[:-1]
-            action = key[-1]
-            visit_count = self.state_visit_count.get(key, 0)
-            q_value = self.q_table.get(key, 0.0)
-            last_visited = self.state_last_visited.get(key, 0)
+            # Показываем до 30 записей для обзора (или все, если их меньше)
+            show_limit = min(100, len(keys_to_remove))
+            for i, key in enumerate(keys_to_remove[:show_limit], 1):
+                state_action = key[:-1]
+                action = key[-1]
+                visit_count = self.state_visit_count.get(key, 0)
+                q_value = self.q_table.get(key, 0.0)
+                last_visited = self.state_last_visited.get(key, 0)
 
-            # Находим приоритет этой записи для вывода
-            priority = next(
-                record[0] for record in records_with_priority
-                if record[1] == key
-            )
+                # Находим приоритет этой записи для вывода
+                priority = next(
+                    record[0] for record in records_with_priority
+                    if record[1] == key
+                )
 
-            print(f"{i:<3} {str(state_action):<20} {action:<8} {q_value:<10.4f} {visit_count:<8} {last_visited:<12} {priority:<10.4f}")
+                print(f"{i:<3} {str(state_action):<20} {action:<8} {q_value:<10.4f} {visit_count:<8} {last_visited:<12} {priority:<10.4f}")
 
 
-            total_visit += visit_count
-            total_q += q_value
-            total_priority += priority
-            removed_count += 1
+                total_visit += visit_count
+                total_q += q_value
+                total_priority += priority
+                removed_count += 1
 
-        if len(keys_to_remove) > show_limit:
-            print(f"... и ещё {len(keys_to_remove) - show_limit} записей.")
+            if len(keys_to_remove) > show_limit:
+                print(f"... и ещё {len(keys_to_remove) - show_limit} записей.")
 
-        print("-" * 90)
+            print("-" * 90)
 
-        # Статистика по удаляемым записям
-        avg_visit = total_visit / removed_count if removed_count > 0 else 0
-        avg_q = total_q / removed_count if removed_count > 0 else 0
-        avg_priority = total_priority / removed_count if removed_count > 0 else 0
+            # Статистика по удаляемым записям
+            avg_visit = total_visit / removed_count if removed_count > 0 else 0
+            avg_q = total_q / removed_count if removed_count > 0 else 0
+            avg_priority = total_priority / removed_count if removed_count > 0 else 0
 
-        print(f"Статистика по удаляемым: средняя посещаемость = {avg_visit:.1f}, "
-            f"средний Q‑value = {avg_q:.4f}, средний приоритет = {avg_priority:.4f}")
-        print(f"Всего будет удалено: {len(keys_to_remove)} записей")
+            print(f"Статистика по удаляемым: средняя посещаемость = {avg_visit:.1f}, "
+                f"средний Q‑value = {avg_q:.4f}, средний приоритет = {avg_priority:.4f}")
+            print(f"Всего будет удалено: {len(keys_to_remove)} записей")
 
         # Фактическое удаление записей
         for key in keys_to_remove:
@@ -510,7 +516,8 @@ class QLearningTrainer:
             except KeyError:
                 continue
 
-        print(f"Q‑таблица очищена. Новый размер: {len(self.q_table)}")
+        if self.config.get('ENABLE_PRUNE_LOGGING', True):
+            print(f"Q‑таблица очищена. Новый размер: {len(self.q_table)}")
 
     def plot_training_results(self):
         plt.figure(figsize=(15, 16))
@@ -631,15 +638,16 @@ class QLearningTrainer:
 
                 # В цикле обучения, после завершения эпизода и расчёта avg_reward
                 if avg_reward < 50 and episode % 20 == 0:
-                    print(f"\n{'='*120}")
-                    print(f"ОТЛАДКА: НИЗКИЙ REWARD НА ЭПИЗОДЕ {episode}")
-                    print(f"Средний reward = {avg_reward:.2f}, размер Q‑таблицы = {len(self.q_table)}")
-                    print(f"{'='*120}")
+                    if self.config.get('ENABLE_PRUNE_LOGGING', True):
+                        print(f"\n{'='*120}")
+                        print(f"ОТЛАДКА: НИЗКИЙ REWARD НА ЭПИЗОДЕ {episode}")
+                        print(f"Средний reward = {avg_reward:.2f}, размер Q‑таблицы = {len(self.q_table)}")
+                        print(f"{'='*120}")
 
-                    # Выводим структурированную Q‑таблицу (первые 20 состояний, отсортированных по Q‑value)
-                    self.print_q_table_full()
+                        # Выводим структурированную Q‑таблицу (первые 20 состояний, отсортированных по Q‑value)
+                        self.print_q_table_full()
 
-                    print(f"{'-'*120}\n")
+                        print(f"{'-'*120}\n")
 
                 # СОХРАНЕНИЕ ПРИ УЛУЧШЕНИИ СРЕДНЕГО РЕЗУЛЬТАТА
                 if avg_reward > self.best_avg_reward:
@@ -681,6 +689,10 @@ class QLearningTrainer:
 
     def print_q_table_full(self):
         """Выводит все записи Q‑таблицы с посещаемостью и значениями, отсортированные по Q‑value."""
+        if not self.config.get('ENABLE_PRUNE_LOGGING', True):
+            return  # Выходим, если вывод отключён
+
+
         print("\n" + "=" * 80)
         print("ПОЛНАЯ Q‑ТАБЛИЦА (состояние, действие) → Q‑value, посещаемость")
         print("=" * 80)
@@ -689,35 +701,35 @@ class QLearningTrainer:
             print("Q‑таблица пуста.")
             return
 
-        # Создаём список кортежей (ключ, Q‑значение, посещаемость) для сортировки
-        table_data = []
-        for key, q_value in self.q_table.items():
-            visit_count = self.state_visit_count.get(key, 0)  # Получаем посещаемость, если есть
-            table_data.append((key, q_value, visit_count))
+            # Создаём список кортежей (ключ, Q‑значение, посещаемость) для сортировки
+            table_data = []
+            for key, q_value in self.q_table.items():
+                visit_count = self.state_visit_count.get(key, 0)  # Получаем посещаемость, если есть
+                table_data.append((key, q_value, visit_count))
 
-        # Сортируем по убыванию Q‑значения
-        sorted_table = sorted(table_data, key=lambda x: x[1], reverse=True)
+            # Сортируем по убыванию Q‑значения
+            sorted_table = sorted(table_data, key=lambda x: x[1], reverse=True)
 
-        # Выводим первые 50 записей (чтобы не перегружать вывод)
-        max_display = 20
-        count = 0
-        for key, q_value, visit_count in sorted_table:
-            if count >= max_display:
-                break
-            state_action = key[:-1]  # Состояние (все элементы кроме последнего)
-            action = key[-1]          # Действие (последний элемент)
-            print(f"Состояние: {state_action}, Действие: {action} → Q‑value: {q_value:.4f}, Посещаемость: {visit_count}")
-            count += 1
+            # Выводим первые 50 записей (чтобы не перегружать вывод)
+            max_display = 20
+            count = 0
+            for key, q_value, visit_count in sorted_table:
+                if count >= max_display:
+                    break
+                state_action = key[:-1]  # Состояние (все элементы кроме последнего)
+                action = key[-1]          # Действие (последний элемент)
+                print(f"Состояние: {state_action}, Действие: {action} → Q‑value: {q_value:.4f}, Посещаемость: {visit_count}")
+                count += 1
 
-        # Если записей больше, чем выведено, сообщаем об этом
-        if len(sorted_table) > max_display:
-            print(f"\n... и ещё {len(sorted_table) - max_display} записей (всего: {len(sorted_table)})")
+            # Если записей больше, чем выведено, сообщаем об этом
+            if len(sorted_table) > max_display:
+                print(f"\n... и ещё {len(sorted_table) - max_display} записей (всего: {len(sorted_table)})")
 
-        print(f"\nВсего записей в Q‑таблице: {len(self.q_table)}")
-        print(f"Уникальных состояний: {len(set(key[:-1] for key in self.q_table.keys()))}")
-        print(f"Среднее Q‑значение: {np.mean([v for v in self.q_table.values()]):.4f}")
-        print(f"Максимальное Q‑значение: {max(self.q_table.values()):.4f}")
-        print(f"Минимальное Q‑значение: {min(self.q_table.values()):.4f}")
+            print(f"\nВсего записей в Q‑таблице: {len(self.q_table)}")
+            print(f"Уникальных состояний: {len(set(key[:-1] for key in self.q_table.keys()))}")
+            print(f"Среднее Q‑значение: {np.mean([v for v in self.q_table.values()]):.4f}")
+            print(f"Максимальное Q‑значение: {max(self.q_table.values()):.4f}")
+            print(f"Минимальное Q‑значение: {min(self.q_table.values()):.4f}")
 
 
 # Запуск обучения
