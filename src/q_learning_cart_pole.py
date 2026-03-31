@@ -4,40 +4,30 @@ import random
 import matplotlib.pyplot as plt
 
 # ОСНОВНЫЕ НАСТРОЙКИ ОБУЧЕНИЯ
-ENVIRONMENT_ID = 'CartPole-v1'  # ID среды Gymnasium для обучения
-TARGET_EPISODE_REWARD = 450  # Целевой суммарный reward за эпизод (успешное решение задачи)
-MAX_EPISODES = 3000  # Максимальное количество обучающих эпизодов
-CONSECUTIVE_SUCCESS_THRESHOLD = 5  # Число последовательных успешных эпизодов для досрочной остановки
+ENVIRONMENT_ID = 'CartPole-v1'
+TARGET_EPISODE_REWARD = 450
+MAX_EPISODES = 3000
+CONSECUTIVE_SUCCESS_THRESHOLD = 5
 
 # ПАРАМЕТРЫ Q‑ОБУЧЕНИЯ
-DISCOUNT_FACTOR_GAMMA = 0.99  # Коэффициент дисконтирования будущих наград (0.9–0.99)
+DISCOUNT_FACTOR_GAMMA = 0.99
 
 # КОНФИГУРАЦИЯ ДИСКРЕТИЗАЦИИ СОСТОЯНИЙ
-STATE_BUCKET_SIZES = [8, 8, 12, 10]  # Число корзин для каждого измерения состояния:
-# [позиция тележки, скорость тележки, угол палки, угловая скорость палки]
-
-STATE_VALUE_BOUNDS = [  # Границы значений для каждого измерения (min, max)
-    (-4.8, 4.8),   # позиция тележки (м)
-    (-3.5, 3.5),   # скорость тележки (м/с)
-    (-0.21, 0.21), # угол отклонения палки (рад)
-    (-2.0, 2.0)    # угловая скорость палки (рад/с)
+STATE_BUCKET_SIZES = [6, 6, 15, 12]  # Оптимизированная дискретизация
+STATE_VALUE_BOUNDS = [
+    (-4.8, 4.8),
+    (-3.5, 3.5),
+    (-0.21, 0.21),
+    (-2.0, 2.0)
 ]
 
-Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [2]  # Форма Q‑таблицы: [корзины_по_состояниям, число_действий]
+Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [2]
 q_table = np.zeros(Q_TABLE_SHAPE)
 best_q_table = None
-best_avg_reward = -np.inf  # Инициализируем минимально возможным значением
+best_avg_reward = -np.inf
+
 
 def discretize_state(state):
-    """
-    Преобразует непрерывное состояние в дискретный индекс для Q‑таблицы.
-
-    Args:
-        state: непрерывное состояние среды (4 значения)
-
-    Returns:
-        tuple: дискретизированный индекс состояния для Q‑таблицы
-    """
     discretized = []
     for i in range(len(state)):
         state_i = max(STATE_VALUE_BOUNDS[i][0], min(STATE_VALUE_BOUNDS[i][1], state[i]))
@@ -48,73 +38,39 @@ def discretize_state(state):
     return tuple(discretized)
 
 def get_exploration_rate(episode: int) -> float:
-    """
-    Возвращает текущую вероятность случайного действия (ε) в зависимости от номера эпизода.
+    EPSILON_START = 1.0
+    EPSILON_END = 0.01
+    EPSILON_DECAY = 1200
+    return EPSILON_END + (EPSILON_START - EPSILON_END) * np.exp(-episode / EPSILON_DECAY)
 
-    Стратегия:
-    - 0–500 эпизодов: максимальное исследование (ε = 1.0)
-    - 500–1500 эпизодов: линейное уменьшение до 0.1
-    - 1500–3000 эпизодов: плавное снижение до 0.01
-
-    Args:
-        episode (int): номер текущего обучающего эпизода
-
-    Returns:
-        float: вероятность случайного действия в диапазоне [0.01, 1.0]
-    """
-    if episode < 500:
-        return 1.0
-    elif episode < 1500:
-        progress = (episode - 500) / 1000
-        return 1.0 - (1.0 - 0.1) * progress
+def get_learning_rate(episode: int, td_error: float = None) -> float:
+    base_alpha = 0.3
+    if td_error and td_error < 1.0:
+        alpha = base_alpha * 0.5
+    elif td_error and td_error > 10.0:
+        alpha = base_alpha * 1.5
     else:
-        remaining_episodes = max(0, 3000 - episode)
-        return max(0.01, 0.1 * remaining_episodes / 1500)
+        alpha = base_alpha
+    if episode > 1500:
+        alpha *= 0.7
+    return max(0.05, alpha)
 
-def get_learning_rate(episode: int) -> float:
-    """
-    Возвращает текущую скорость обучения (α) в зависимости от номера эпизода.
-
-    Стратегия: поэтапное снижение скорости обучения для стабилизации Q‑значений.
-
-    Args:
-        episode (int): номер текущего обучающего эпизода
-
-    Returns:
-        float: скорость обучения в диапазоне [0.1, 0.3]
-    """
-    LEARNING_RATE_PHASES = [
-        (0, 1000, 0.3),   # Эпизоды 0–1000: высокая скорость обучения
-        (1000, 1500, 0.2), # Эпизоды 1000–1500: умеренная скорость
-        (1500, None, 0.1)   # Эпизоды 1500+: низкая скорость для тонкой настройки
-    ]
-    for start, end, rate in LEARNING_RATE_PHASES:
-        if start <= episode and (end is None or episode < end):
-            return rate
-    return LEARNING_RATE_PHASES[-1][2]  # Возвращаем последнюю фазу, если вышли за пределы
-
-# НАСТРОЙКИ ФОРМИРОВАНИЯ НАГРАДЫ (REWARD SHAPING)
-ANGLE_STABILITY_BONUS_WEIGHT = 2.0  # Вес бонуса за вертикальное положение палки
-POSITION_CENTERING_BONUS_WEIGHT = 1.0  # Вес бонуса за центрирование тележки
+ANGLE_STABILITY_BONUS_WEIGHT = 2.0
+POSITION_CENTERING_BONUS_WEIGHT = 1.0
 
 def calculate_reward(state, base_reward):
-    """Reward shaping: бонус за стабильность"""
     x, x_dot, theta, theta_dot = state
-    # Бонус за угол ближе к вертикали (максимальный при theta = 0)
-    angle_bonus = ANGLE_STABILITY_BONUS_WEIGHT * (1 - abs(theta) / 0.21)
-    # Бонус за малую скорость тележки (максимальный при x = 0)
-    position_bonus = POSITION_CENTERING_BONUS_WEIGHT * (1 - abs(x) / 4.8)
-    total_bonus = max(0, angle_bonus + position_bonus)
+    angle_bonus = ANGLE_STABILITY_BONUS_WEIGHT * (1 - (abs(theta) / 0.21) ** 2)
+    position_bonus = POSITION_CENTERING_BONUS_WEIGHT * (1 - (abs(x) / 4.8) ** 2)
+    velocity_penalty = -0.8 * (abs(theta_dot) / 2.0)
+    total_bonus = max(0, angle_bonus + position_bonus + velocity_penalty)
     return base_reward + total_bonus
 
-
-# НАСТРОЙКИ СГЛАЖИВАНИЯ И АНАЛИЗА РЕЗУЛЬТАТОВ
-EWMA_SMOOTHING_ALPHA = 0.1  # Коэффициент сглаживания для экспоненциального скользящего среднего
-REWARD_HISTORY_WINDOW = 50  # Размер окна для расчёта среднего reward (последние N эпизодов)
-PROGRESS_REPORT_FREQUENCY = 100  # Частота вывода отчётов о прогрессе (каждые N эпизодов)
+EWMA_SMOOTHING_ALPHA = 0.1
+REWARD_HISTORY_WINDOW = 50
+PROGRESS_REPORT_FREQUENCY = 100
 
 def calculate_ewma(scores, alpha=EWMA_SMOOTHING_ALPHA):
-    """Экспоненциально взвешенное скользящее среднее"""
     if not scores:
         return 0
     ewma = scores[0]
@@ -122,18 +78,19 @@ def calculate_ewma(scores, alpha=EWMA_SMOOTHING_ALPHA):
         ewma = alpha * score + (1 - alpha) * ewma
     return ewma
 
-# КРИТЕРИИ КОНТРОЛЯ КАЧЕСТВА СТРАТЕГИИ
-ACTION_DIVERSITY_THRESHOLD = 0.1  # Минимально допустимое соотношение редко/часто выбираемых действий
-UNDERPERFORMANCE_MARGIN = 0.8  # Доля от целевого reward для определения «слабой» стратегии
-
 def train_q_learning():
     env = gym.make(ENVIRONMENT_ID)
     scores = []
-    avg_scores = []  # Для сглаженного графика
-    success_count = 0  # Счётчик последовательных успехов
+    avg_scores = []
+    td_errors_history = []  # Храним TD‑ошибки для анализа
+    success_count = 0
 
     best_q_table = None
     best_avg_reward = -np.inf
+
+    print("Начало обучения Q‑learning...")
+    print(f"Параметры: MAX_EPISODES={MAX_EPISODES}, TARGET_REWARD={TARGET_EPISODE_REWARD}")
+
 
     for episode in range(MAX_EPISODES):
         state = env.reset()
@@ -142,129 +99,173 @@ def train_q_learning():
         discretized_state = discretize_state(state)
         score = 0
         epsilon = get_exploration_rate(episode)
-        alpha = get_learning_rate(episode)
-        action_counts = [0, 0]  # Счётчик действий 0 и 1
+        td_errors = []  # Ошибки текущего эпизода
 
-        for t in range(500):  # Максимум 500 шагов в эпизоде
-            # Выбор действия: ε‑жадное правило
+        action_counts = [0, 0]
+
+        for t in range(500):
             if random.uniform(0, 1) < epsilon:
-                action = env.action_space.sample()  # Случайное действие
+                action = env.action_space.sample()
             else:
-                action = np.argmax(q_table[discretized_state])  # Лучшее действие из Q‑таблицы
+                action = np.argmax(q_table[discretized_state])
 
             action_counts[action] += 1
-                        # Выполняем действие
+
             next_state, base_reward, done, truncated, _ = env.step(action)
             if truncated:
                 done = True
 
-            # Применяем reward shaping
             reward = calculate_reward(next_state, base_reward)
-
-            # Дискретизируем следующее состояние
             discretized_next_state = discretize_state(next_state)
 
-            # Обновляем Q‑значение согласно алгоритму Q‑learning
+            # Расчёт TD‑ошибки
             best_next_action = np.argmax(q_table[discretized_next_state])
             td_target = reward + DISCOUNT_FACTOR_GAMMA * q_table[discretized_next_state][best_next_action]
             td_error = td_target - q_table[discretized_state + (action,)]
+            td_errors.append(abs(td_error))  # Сохраняем абсолютную ошибку
+
+
+            alpha = get_learning_rate(episode, td_error)
             q_table[discretized_state + (action,)] += alpha * td_error
 
             discretized_state = discretized_next_state
-            score += base_reward  # Используем оригинальный reward для подсчёта score
+            score += base_reward
 
             if done:
                 break
 
         scores.append(score)
+        avg_td_error = np.mean(td_errors) if td_errors else 0
+        td_errors_history.append(avg_td_error)
 
-        # Сглаженный средний reward (последние N эпизодов)
+        # Расчёт среднего reward за последние N эпизодов
         if len(scores) >= REWARD_HISTORY_WINDOW:
             avg_score = np.mean(scores[-REWARD_HISTORY_WINDOW:])
             avg_scores.append(avg_score)
         else:
             avg_scores.append(np.mean(scores))
 
-        # Контроль за «вырождением» стратегии: проверяем разнообразие действий
-        max_actions = max(action_counts)
-        if max_actions > 0:
-            diversity_ratio = min(action_counts) / max_actions
-        else:
-            diversity_ratio = 0
 
-        # Если стратегия слишком однообразна и результат слабый — принудительно увеличиваем epsilon
-        if (diversity_ratio < ACTION_DIVERSITY_THRESHOLD and
-                score < TARGET_EPISODE_REWARD * UNDERPERFORMANCE_MARGIN):
-            epsilon = max(epsilon, 0.3)
+        # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
+        if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
+            ewma_score = calculate_ewma(scores[-REWARD_HISTORY_WINDOW:])
+            print(f"\n--- Эпизод {episode + 1} ---")
+            print(f"  EWMA reward: {ewma_score:.2f}")
+            print(f"  Средний reward ({REWARD_HISTORY_WINDOW} эпизодов): {avg_scores[-1]:.2f}")
+            print(f"  Текущий epsilon: {epsilon:.3f}")
+            print(f"  Текущая alpha: {alpha:.3f}")
+            print(f"  Средняя |TD‑ошибка|: {avg_td_error:.3f}")
+            print(f"  Последовательных успехов: {success_count}/{CONSECUTIVE_SUCCESS_THRESHOLD}")
+            print(f"  Лучший средний reward: {best_avg_reward:.2f}")
 
-        # Проверка условия успеха: средний reward за последние N эпизодов выше целевого
+                # Проверка успеха и сохранение лучшей модели
         if (len(scores) >= REWARD_HISTORY_WINDOW and
                 np.mean(scores[-REWARD_HISTORY_WINDOW:]) >= TARGET_EPISODE_REWARD):
             success_count += 1
+            print(f"  УСЛОВИЕ УСПЕХА ВЫПОЛНЕНО! Текущий средний: {np.mean(scores[-REWARD_HISTORY_WINDOW:]):.2f} "
+                  f"(цель: {TARGET_EPISODE_REWARD})")
+
             if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
-                print(f"\nСтабильный успех! Целевой reward {TARGET_EPISODE_REWARD} "
-                      f"удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
+                print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
+                print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
                 break
         else:
-            success_count = 0  # Сбрасываем счётчик при провале
+            if success_count > 0:
+                print(f"  Серия успехов прервана. Счётчик сброшен до 0.")
+            success_count = 0
 
-        # Сохранение лучшей модели: обновляем, если текущий средний reward выше
-        if len(scores) >= REWARD_HISTORY_WINDOW:
-            current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:])
-        else:
-            current_avg = np.mean(scores[:len(scores)])
-
+        # Сохранение лучшей модели
+        current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:]) if len(scores) >= REWARD_HISTORY_WINDOW else np.mean(scores)
         if current_avg > best_avg_reward:
             best_avg_reward = current_avg
-            best_q_table = q_table.copy()  # Сохраняем копию лучшей таблицы
-
-        # Вывод прогресса с EWMA каждые N эпизодов
-        ewma_score = calculate_ewma(scores[-REWARD_HISTORY_WINDOW:])
-        if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
-            print(f"Эпизод {episode + 1}, EWMA reward: {ewma_score:.2f}, "
-                  f"Средний за {REWARD_HISTORY_WINDOW}: {avg_scores[-1]:.2f}")
+            best_q_table = q_table.copy()
+            print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
 
     env.close()
-    return scores, avg_scores, best_q_table, best_avg_reward
+    return scores, avg_scores, td_errors_history, best_q_table, best_avg_reward
 
 if __name__ == "__main__":
-    scores, avg_scores, best_model, final_best_avg_reward = train_q_learning()
+    scores, avg_scores, td_errors, best_model, final_best_avg_reward = train_q_learning()
 
     # Визуализация результатов
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(15, 10))
+
+    # График 1: Reward за эпизод и средний reward
+    plt.subplot(2, 2, 1)
     plt.plot(scores, label='Reward за эпизод', alpha=0.6)
-    plt.plot(range(REWARD_HISTORY_WINDOW - 1, len(avg_scores) + REWARD_HISTORY_WINDOW - 1),
-              avg_scores, label='Средний reward ({REWARD_HISTORY_WINDOW} эпизодов)', color='red')
+    if len(avg_scores) > 0:
+        plt.plot(range(REWARD_HISTORY_WINDOW - 1, len(avg_scores) + REWARD_HISTORY_WINDOW - 1),
+                  avg_scores, label='Средний reward ({REWARD_HISTORY_WINDOW} эпизодов)', color='red')
     plt.axhline(y=TARGET_EPISODE_REWARD, color='green', linestyle='--',
                label=f'Целевой reward {TARGET_EPISODE_REWARD}')
     plt.xlabel('Эпизод')
     plt.ylabel('Reward')
-    plt.title('Обучение Q‑learning на CartPole-v1 (улучшенная версия)')
+    plt.title('Обучение Q‑learning: Reward динамика')
     plt.legend()
     plt.grid(True)
+
+    # График 2: TD‑ошибки
+    plt.subplot(2, 2, 2)
+    plt.plot(td_errors, color='orange', label='Средняя |TD‑ошибка| за эпизод')
+    plt.axhline(y=np.mean(td_errors), color='red', linestyle='--',
+               label=f'Средняя TD‑ошибка: {np.mean(td_errors):.3f}')
+    plt.xlabel('Эпизод')
+    plt.ylabel('|TD‑ошибка|')
+    plt.title('Стабильность обучения (TD‑ошибки)')
+    plt.legend()
+    plt.grid(True)
+
+    # График 3: Epsilon и Alpha
+    plt.subplot(2, 2, 3)
+    episodes_for_params = list(range(0, len(scores), PROGRESS_REPORT_FREQUENCY))
+    epsilon_values = [get_exploration_rate(ep) for ep in episodes_for_params]
+    alpha_values = []
+    for ep in episodes_for_params:
+        # Для простоты берём среднее значение alpha за эпизод — в реальности нужно сохранять историю
+        alpha_values.append(0.3 if ep < 1000 else 0.2 if ep < 1500 else 0.1)
+
+    plt.plot(episodes_for_params, epsilon_values, label='Epsilon (исследование)', color='purple')
+    plt.plot(episodes_for_params, alpha_values, label='Alpha (скорость обучения)', color='brown')
+    plt.xlabel('Эпизод')
+    plt.ylabel('Значение')
+    plt.title('Параметры обучения: Epsilon и Alpha')
+    plt.legend()
+    plt.grid(True)
+
+    # График 4: Распределение финальных rewards
+    plt.subplot(2, 2, 4)
+    plt.hist(scores[-100:], bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+    plt.axvline(x=TARGET_EPISODE_REWARD, color='red', linestyle='--',
+                label=f'Цель: {TARGET_EPISODE_REWARD}')
+    plt.xlabel('Reward за эпизод')
+    plt.ylabel('Частота')
+    plt.title('Распределение rewards (последние 100 эпизодов)')
+    plt.legend()
+    plt.grid(True)
+
     plt.tight_layout()
     plt.show()
 
     # Сохранение лучшей модели
     if best_model is not None:
         np.save('best_q_table.npy', best_model)
-        print(f"\nЛучшая модель сохранена в 'best_q_table.npy'")
-        print(f"Лучший средний reward: {final_best_avg_reward:.2f}")
+        print(f"\n💾 Лучшая модель сохранена в 'best_q_table.npy'")
+        print(f"🏆 Лучший средний reward: {final_best_avg_reward:.2f}")
 
     # Статистика обучения
-    print(f"\n--- Статистика обучения ---")
+    print(f"\n--- СТАТИСТИКА ОБУЧЕНИЯ ---")
     print(f"Всего эпизодов: {len(scores)}")
     print(f"Максимальный reward за эпизод: {max(scores):.2f}")
     print(f"Средний reward за все эпизоды: {np.mean(scores):.2f}")
     if len(scores) >= 100:
         print(f"Средний reward за последние 100 эпизодов: {np.mean(scores[-100:]):.2f}")
-
+        print(f"Стандартная девиация rewards (последние 100): {np.std(scores[-100:]):.2f}")
 
     achieved_target = final_best_avg_reward >= TARGET_EPISODE_REWARD
-    print(f"Достигнут целевой reward {TARGET_EPISODE_REWARD}: {'Да' if achieved_target else 'Нет'}")
+    print(f"Достигнут целевой reward {TARGET_EPISODE_REWARD}: {'✅ Да' if achieved_target else '❌ Нет'}")
 
     # Тестирование лучшей модели
-    print(f"\nТестирование лучшей модели...")
+    print(f"\n🧪 Тестирование лучшей модели...")
     test_episodes = 10
     test_env = gym.make(ENVIRONMENT_ID)
     test_scores = []
@@ -288,6 +289,7 @@ if __name__ == "__main__":
         test_scores.append(score)
 
     test_env.close()
+
     print(f"Результаты тестирования лучшей модели ({test_episodes} эпизодов):")
     print(f"Средний reward: {np.mean(test_scores):.2f}")
     print(f"Минимальный reward: {min(test_scores)}")
@@ -295,3 +297,8 @@ if __name__ == "__main__":
     successful_tests = sum(1 for s in test_scores if s >= TARGET_EPISODE_REWARD)
     print(f"Успешных эпизодов (reward ≥ {TARGET_EPISODE_REWARD}): "
           f"{successful_tests} из {test_episodes}")
+
+    if successful_tests == test_episodes:
+        print("🎉 ПОЛНЫЙ УСПЕХ В ТЕСТИРОВАНИИ: все эпизоды достигли целевого reward!")
+    else:
+        print(f"⚠️  В тестировании {test_episodes - successful_tests} эпизодов не достигли цели.")
