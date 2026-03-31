@@ -21,11 +21,29 @@ STATE_VALUE_BOUNDS = [
     (-2.0, 2.0)
 ]
 
+# ДОБАВЛЕННАЯ КОНСТАНТА ЛИМИТА РАЗМЕРА
+MAX_Q_TABLE_SIZE = 1_000_000  # Максимум 1 млн элементов — можно настроить
+
 Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [2]
 q_table = np.zeros(Q_TABLE_SHAPE)
 best_q_table = None
 best_avg_reward = -np.inf
 
+def check_q_table_size(bucket_sizes, n_actions, max_size):
+    """
+    Проверяет, не превышает ли размер Q‑таблицы допустимый лимит.
+
+    Args:
+        bucket_sizes: список размеров корзин для каждого измерения состояния
+        n_actions: количество возможных действий
+        max_size: максимально допустимый размер таблицы
+
+    Returns:
+        tuple: (bool — допустимо ли создание, int — вычисленный размер)
+    """
+    total_size = np.prod(bucket_sizes) * n_actions
+    is_acceptable = total_size <= max_size
+    return is_acceptable, total_size
 
 def discretize_state(state):
     discretized = []
@@ -80,6 +98,34 @@ def calculate_ewma(scores, alpha=EWMA_SMOOTHING_ALPHA):
 
 def train_q_learning():
     env = gym.make(ENVIRONMENT_ID)
+
+    # ПРОВЕРКА РАЗМЕРА Q‑ТАБЛИЦЫ ПЕРЕД СОЗДАНИЕМ
+    is_valid_size, calculated_size = check_q_table_size(
+        STATE_BUCKET_SIZES,
+        env.action_space.n,
+        MAX_Q_TABLE_SIZE
+    )
+
+    if not is_valid_size:
+        print(f"❌ ПЕРЕПОЛНЕНИЕ Q‑ТАБЛИЦЫ ОБНАРУЖЕНО!")
+        print(f"  Вычисленный размер: {calculated_size:,} элементов")
+        print(f"  Максимальный допустимый: {MAX_Q_TABLE_SIZE:,} элементов")
+        print(f"  Соотношение: {calculated_size / MAX_Q_TABLE_SIZE:.2f}x превышения")
+        print("\nРЕКОМЕНДАЦИИ:")
+        print("  1. Уменьшите STATE_BUCKET_SIZES (например, [4, 4, 8, 6])")
+        print("  2. Используйте аппроксимацию функций (нейросети) вместо таблиц")
+        print("  3. Увеличьте MAX_Q_TABLE_SIZE, если есть достаточно памяти")
+        print("❌ Обучение прервано из‑за потенциального переполнения памяти.")
+        env.close()
+        return None, None, None, None, None
+
+    # Создаём Q‑таблицу только если размер допустим
+    Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [env.action_space.n]
+    q_table = np.zeros(Q_TABLE_SHAPE)
+
+    print(f"✅ Q‑таблица создана успешно: {calculated_size:,} элементов "
+          f"({calculated_size / MAX_Q_TABLE_SIZE * 100:.1f}% от лимита)")
+
     scores = []
     avg_scores = []
     td_errors_history = []  # Храним TD‑ошибки для анализа
