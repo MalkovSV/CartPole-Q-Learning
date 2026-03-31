@@ -62,16 +62,28 @@ def get_exploration_rate(episode: int) -> float:
     return EPSILON_END + (EPSILON_START - EPSILON_END) * np.exp(-episode / EPSILON_DECAY)
 
 def get_learning_rate(episode: int, td_error: float = None) -> float:
-    base_alpha = 0.3
-    if td_error and td_error < 1.0:
-        alpha = base_alpha * 0.5
-    elif td_error and td_error > 10.0:
-        alpha = base_alpha * 1.5
+    """
+    Адаптивная скорость обучения с экспоненциальным затуханием.
+    """
+    ALPHA_START = 0.3      # Начальная скорость обучения
+    ALPHA_END = 0.05      # Минимальная скорость обучения
+    ALPHA_DECAY = 0.002   # Коэффициент затухания (подбирается экспериментально)
+
+    # Базовое экспоненциальное затухание
+    base_alpha = ALPHA_END + (ALPHA_START - ALPHA_END) * np.exp(-ALPHA_DECAY * episode)
+
+    # Адаптивная корректировка на основе TD‑ошибки
+    if td_error is not None:
+        if td_error < 1.0:
+            alpha = base_alpha * 0.8  # Уменьшаем при малой ошибке (стабильное обучение)
+        elif td_error > 10.0:
+            alpha = base_alpha * 1.2  # Увеличиваем при большой ошибке (нужно больше обновлений)
+        else:
+            alpha = base_alpha
     else:
         alpha = base_alpha
-    if episode > 1500:
-        alpha *= 0.7
-    return max(0.05, alpha)
+
+    return max(ALPHA_END, alpha)
 
 ANGLE_STABILITY_BONUS_WEIGHT = 2.0
 POSITION_CENTERING_BONUS_WEIGHT = 1.0
