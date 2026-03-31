@@ -7,15 +7,16 @@ import pandas as pd
 import pickle
 from functools import lru_cache
 import heapq
+import time
 
-# КОНФИГУРАЦИЯ — все параметры в одном месте
+# КОНФИГУРАЦИЯ
 CONFIG = {
     # Основные параметры обучения
-    'EPISODES': 1600,
+    'EPISODES': 1800,
     'RENDER_EVERY': 20,
 
     # Параметры Q‑learning
-    'LEARNING_RATE': 0.05,
+    'LEARNING_RATE': 0.01,
     'DISCOUNT': 0.99,
 
     # ε‑жадная стратегия
@@ -40,11 +41,14 @@ CONFIG = {
     'PROGRESS_THRESHOLD': 0.05,    # порог для адаптации
 
     # ОГРАНИЧЕНИЕ НА РАЗМЕР Q‑ТАБЛИЦЫ
-    'PRUNE_THRESHOLD': 4500,        # Запускать очистку при 3000 записях
+    'PRUNE_THRESHOLD': 4000,        # Запускать очистку при 3000 записях
     'MAX_Q_TABLE_SIZE': 5000,       # Максимальный размер — 4000
     'PRUNE_TARGET_RATIO': 0.75,      # Оставлять 80 % от максимума
 
     'ENABLE_PRUNE_LOGGING': False,  # По умолчанию — вывод выключён
+
+    # Логирование инициализации Q‑значений
+    'ENABLE_INIT_LOGGING': False,  # Включить/выключить логирование новых записей
 }
 
 
@@ -113,15 +117,31 @@ class QLearningTrainer:
         return {}  # Пустой словарь вместо np.zeros
 
     def _get_q_value(self, discrete_state, action):
-        """Получает Q‑значение для состояния и действия. Создаёт запись, если её нет."""
         key = discrete_state + (action,)
         if key not in self.q_table:
-            self.q_table[key] = 0.0
+            # Оптимистичная инициализация с небольшим шумом
+            optimistic_value = 1.0
+            noise = np.random.normal(0, 0.05)  # Небольшой шум
+            self.q_table[key] = optimistic_value + noise
+            # Гарантируем, что значение остаётся положительным
+            self.q_table[key] = max(self.q_table[key], 0.5)
+
+            # Логирование новых записей (опционально, для отладки)
+            if self.config.get('ENABLE_INIT_LOGGING', False):
+                print(f"Создана новая запись Q‑таблицы: {key} = {self.q_table[key]:.3f}")
         return self.q_table[key]
 
+
     def _set_q_value(self, discrete_state, action, value):
-        """Устанавливает Q‑значение для состояния и действия."""
-        self.q_table[discrete_state + (action,)] = value    
+        """Устанавливает Q‑значение для состояния и действия с ограничением."""
+        key = discrete_state + (action,)
+
+        # Реалистичные границы для CartPole-v1
+        MAX_Q = 500  # Максимум за эпизод (500 шагов × награда 1)
+        MIN_Q = -10  # Минимальный штраф
+
+        clipped_value = np.clip(value, MIN_Q, MAX_Q)
+        self.q_table[key] = clipped_value
 
     def _get_discrete_state_linear(self, state):
         discrete_state = []
@@ -729,6 +749,70 @@ class QLearningTrainer:
         print(f"Максимальное Q‑значение: {max(self.q_table.values()):.4f}")
         print(f"Минимальное Q‑значение: {min(self.q_table.values()):.4f}")
 
+    import time
+
+    def real_time_visualization(self, num_episodes=2, delay=0.02):
+        """Просмотр работы лучшей модели в реальном времени с задержкой для лучшей визуализации."""
+        print(f"\n{'='*50}")
+        print("ДЕМОНСТРАЦИЯ РАБОТЫ ЛУЧШЕЙ МОДЕЛИ")
+        print(f"{'='*50}")
+
+        # Загружаем лучшую модель, если она есть
+        if self.best_avg_model_path and self.load_best_average_model():
+            print(f"Загружена лучшая модель: {self.best_avg_model_path.name}")
+        else:
+            print("Нет сохранённой лучшей модели. Используем текущую Q‑таблицу.")
+
+        env = gym.make('CartPole-v1', render_mode='human')
+
+        try:
+            for episode in range(num_episodes):
+                print(f"\n=== ЭПИЗОД {episode + 1} из {num_episodes} ===")
+                state, _ = env.reset()
+                discrete_state = self.get_discrete_state(tuple(state))
+                total_reward = 0
+                step_count = 0
+
+                # Ограничение по количеству шагов для предотвращения бесконечного цикла
+                max_steps = 500
+
+                while step_count < max_steps:
+                    # Выбираем действие — только эксплуатация (без случайного выбора)
+                    q_values = [
+                        self._get_q_value(discrete_state, a)
+                for a in range(self.action_space_n)
+                    ]
+                    action = np.argmax(q_values)
+
+                    # Выполняем действие
+                    next_state, reward, terminated, truncated, _ = env.step(action)
+                    done = terminated or truncated
+
+                    # Обновляем состояние *до* обновления статистики
+                    discrete_state = self.get_discrete_state(tuple(next_state))
+
+                    total_reward += reward
+                    step_count += 1
+
+                    # Дополнительная информация для отладки (можно отключить)
+                    print(f"Шаг {step_count}: действие={action}, награда={reward:.1f}, "
+                        f"Q‑значения={q_values}, состояние={discrete_state}")
+
+                    # Задержка для лучшей визуализации
+                    time.sleep(delay)
+
+                    if done:
+                        print(f"Эпизод завершён. Reward: {total_reward}, Шагов: {step_count}")
+                        break
+
+                if step_count >= max_steps:
+                    print(f"Эпизод прерван: достигнуто максимальное число шагов ({max_steps}).")
+
+        except Exception as e:
+            print(f"Ошибка во время демонстрации: {e}")
+        finally:
+            env.close()
+            print(f"\nДемонстрация завершена.")
 
 # Запуск обучения
 if __name__ == '__main__':
@@ -741,3 +825,6 @@ if __name__ == '__main__':
         print("Начинаем новое обучение.")
 
     trainer.train()
+
+    # Запуск демонстрации работы лучшей модели после обучения
+    trainer.real_time_visualization(num_episodes=3)
