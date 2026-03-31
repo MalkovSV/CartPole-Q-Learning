@@ -1,4 +1,4 @@
-import gymnasium as gym  # вместо gym, актуальная версия
+import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -139,10 +139,127 @@ def plot_results(episode_rewards):
     plt.ylabel('Средняя награда')
 
     plt.tight_layout()
+    plt.show()    
+
+def test_agent(agent, num_tests=100):
+    """Тестирование обученного агента без обучения"""
+    env = gym.make('CartPole-v1', render_mode='rgb_array')  # Можно убрать render_mode, если не нужна визуализация
+    test_rewards = []
+
+    print(f"\nЗапуск {num_tests} тестовых эпизодов для проверки стабильности...")
+
+    for test_episode in range(num_tests):
+        state, _ = env.reset()
+        discrete_state = agent.get_discrete_state(state)
+        episode_reward = 0
+        done = False
+
+        while not done:
+            # Только эксплуатация: всегда выбираем лучшее действие (без случайного выбора)
+            action = np.argmax(agent.q_table[discrete_state])
+            new_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            episode_reward += reward
+            discrete_state = agent.get_discrete_state(new_state)
+
+        test_rewards.append(episode_reward)
+
+        if (test_episode + 1) % 20 == 0 or test_episode == 0:
+            print(f"Тестовый эпизод {test_episode + 1}, награда: {episode_reward}")
+
+    env.close()
+
+    return test_rewards
+
+def analyze_test_results(test_rewards):
+    """Анализ результатов тестирования"""
+    mean_reward = np.mean(test_rewards)
+    std_reward = np.std(test_rewards)
+    min_reward = np.min(test_rewards)
+    max_reward = np.max(test_rewards)
+    perfect_episodes = np.sum(np.array(test_rewards) == 500)
+    perfect_percentage = (perfect_episodes / len(test_rewards)) * 100
+
+
+    print("\n=== РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ ===")
+    print(f"Количество тестов: {len(test_rewards)}")
+    print(f"Средняя награда: {mean_reward:.2f}")
+    print(f"Стандартное отклонение: {std_reward:.2f}")
+    print(f"Минимальная награда: {min_reward}")
+    print(f"Максимальная награда: {max_reward}")
+    print(f"Идеальных эпизодов (500): {perfect_episodes} ({perfect_percentage:.1f}%)")
+
+    return {
+        'mean': mean_reward,
+        'std': std_reward,
+        'min': min_reward,
+        'max': max_reward,
+        'perfect_count': perfect_episodes,
+        'perfect_percentage': perfect_percentage
+    }
+
+def plot_test_results(test_rewards):
+    """Визуализация результатов тестирования"""
+    plt.figure(figsize=(12, 5))
+
+    # Гистограмма распределения наград
+    plt.subplot(1, 2, 1)
+    plt.hist(test_rewards, bins=20, alpha=0.7, color='lightgreen', edgecolor='black')
+    plt.axvline(x=500, color='red', linestyle='--', linewidth=2,
+                label='Идеальная награда (500)')
+    plt.title('Распределение наград в тестовых эпизодах')
+    plt.xlabel('Награда')
+    plt.ylabel('Частота')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    # Боксплот для анализа распределения
+    plt.subplot(1, 2, 2)
+    box_plot = plt.boxplot(test_rewards, patch_artist=True)
+    # Стилизуем боксплот
+    for patch in box_plot['boxes']:
+        patch.set_facecolor('lightblue')
+        patch.set_alpha(0.7)
+    for whisker in box_plot['whiskers']:
+        whisker.set_color('blue')
+    for cap in box_plot['caps']:
+        cap.set_color('blue')
+    for median in box_plot['medians']:
+        median.set_color('red')
+        median.set_linewidth(2)
+    plt.title('Боксплот результатов тестирования')
+    plt.ylabel('Награда')
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Дополнительная визуализация: кумулятивное распределение
+    plt.figure(figsize=(8, 5))
+    sorted_rewards = np.sort(test_rewards)
+    cumulative_prob = np.arange(1, len(sorted_rewards) + 1) / len(sorted_rewards)
+    plt.plot(sorted_rewards, cumulative_prob, linewidth=2, color='purple')
+    plt.axhline(y=0.95, color='orange', linestyle=':', label='95-й перцентиль')
+    plt.axhline(y=0.5, color='green', linestyle=':', label='Медиана')
+    plt.title('Кумулятивное распределение наград')
+    plt.xlabel('Награда')
+    plt.ylabel('Вероятность (P(X ≤ x))')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.show()
 
 if __name__ == "__main__":
     # Обучение агента
     rewards, trained_agent = train_agent()
-    # Визуализация результатов
+
+    # Визуализация результатов обучения
     plot_results(rewards)
+
+    # Тестирование обученного агента
+    test_rewards = test_agent(trained_agent, num_tests=100)
+
+    # Анализ результатов тестирования
+    analysis_results = analyze_test_results(test_rewards)
+
+    # Визуализация результатов тестирования
+    plot_test_results(test_rewards)
