@@ -24,11 +24,6 @@ STATE_VALUE_BOUNDS = [
 # ДОБАВЛЕННАЯ КОНСТАНТА ЛИМИТА РАЗМЕРА
 MAX_Q_TABLE_SIZE = 1_000_000  # Максимум 1 млн элементов — можно настроить
 
-""" Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [2]
-q_table = np.zeros(Q_TABLE_SHAPE)
-best_q_table = None
-best_avg_reward = -np.inf """
-
 def check_q_table_size(bucket_sizes, n_actions, max_size):
     """
     Проверяет, не превышает ли размер Q‑таблицы допустимый лимит.
@@ -163,7 +158,7 @@ def train_q_learning():
     success_count = 0
 
     best_q_table = None
-    best_avg_reward =-np.inf
+    best_avg_reward = None  # Инициализируем как None для корректного сравнения
 
     # Инициализируем историю параметров
     epsilon_history = []
@@ -217,6 +212,7 @@ def train_q_learning():
         avg_td_error = np.mean(td_errors) if td_errors else 0
         td_errors_history.append(avg_td_error)
 
+
         # Сохраняем текущие значения параметров
         epsilon_history.append(epsilon)
         alpha_history.append(alpha)
@@ -228,7 +224,7 @@ def train_q_learning():
         else:
             avg_scores.append(np.mean(scores))
 
-        # ПРОВЕРКА СТАБИЛЬНОГО УСПЕХА
+        # ПРОВЕРКА СТАБИЛЬНОГО УСПЕХА — исправленная логика
         if len(scores) >= REWARD_HISTORY_WINDOW:
             current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:])
 
@@ -242,12 +238,7 @@ def train_q_learning():
                     print(f"   Обучение завершено успешно.")
                     break
             else:
-                # Сбрасываем счётчик, если текущий средний reward ниже целевого
-                success_count = 0
-        else:
-            # Пока недостаточно данных для расчёта среднего reward за окно эпизодов,
-            # считаем, что последовательный успех не достигнут
-            success_count = 0
+                success_count = 0  # Сбрасываем счётчик, если текущий средний reward ниже целевого
 
         # === КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: УСЛОВНАЯ ЛОГИКА ДЛЯ РАСЧЁТА СРЕДНЕГО REWARD ===
         if len(scores) >= REWARD_HISTORY_WINDOW:
@@ -255,12 +246,12 @@ def train_q_learning():
         else:
             current_avg = np.mean(scores)  # Берём среднее всех доступных эпизодов
 
-        if current_avg > best_avg_reward:  # безопасно: сравниваем с -np.inf
+        if best_avg_reward is None or current_avg > best_avg_reward:  # Безопасное сравнение с None
             best_avg_reward = current_avg
             best_q_table = q_table.copy()
             print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
 
-        # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
+                # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
         if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
             # Используем исправленную функцию с периодом разогрева 5 эпизодов
             ewma_score = calculate_ewma(scores[-REWARD_HISTORY_WINDOW:], warmup_period=5)
@@ -271,13 +262,16 @@ def train_q_learning():
             print(f"  Текущая alpha: {alpha:.3f}")
             print(f"  Средняя |TD‑ошибка|: {avg_td_error:.3f}")
             print(f"  Последовательных успехов: {success_count}/{CONSECUTIVE_SUCCESS_THRESHOLD}")
-            print(f"  Лучший средний reward: {best_avg_reward:.2f}")
+
+            # Исправленный вывод лучшего среднего reward
+            best_reward_display = f"{best_avg_reward:.2f}" if best_avg_reward is not None else "N/A"
+            print(f"  Лучший средний reward: {best_reward_display}")
 
     env.close()
     return scores, avg_scores, td_errors_history, best_q_table, best_avg_reward, epsilon_history, alpha_history
 
 if __name__ == "__main__":
-
+    
     scores, avg_scores, td_errors, best_model, final_best_avg_reward, epsilon_history, alpha_history = train_q_learning()
 
     # Визуализация результатов
