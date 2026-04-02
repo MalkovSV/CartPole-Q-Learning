@@ -163,7 +163,7 @@ def train_q_learning():
     success_count = 0
 
     best_q_table = None
-    best_avg_reward = -np.inf
+    best_avg_reward = None
 
     # Инициализируем историю параметров
     epsilon_history = []
@@ -241,6 +241,20 @@ def train_q_learning():
                 # Сброс счётчика, если условие не выполнено
                 success_count = 0
 
+        # === КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: УСЛОВНАЯ ЛОГИКА ДЛЯ РАСЧЁТА СРЕДНЕГО REWARD ===
+        if len(scores) >= REWARD_HISTORY_WINDOW:
+            current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:])
+        else:
+            current_avg = np.mean(scores)  # Берём среднее всех доступных эпизодов
+
+        # ИНИЦИАЛИЗАЦИЯ best_avg_reward ПРИ ПЕРВОМ РАСЧЁТЕ
+        if best_avg_reward is None:
+            best_avg_reward = current_avg
+        elif current_avg > best_avg_reward:
+            best_avg_reward = current_avg
+            best_q_table = q_table.copy()
+            print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
+
         # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
         if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
             # Используем исправленную функцию с периодом разогрева 5 эпизодов
@@ -253,13 +267,6 @@ def train_q_learning():
             print(f"  Средняя |TD‑ошибка|: {avg_td_error:.3f}")
             print(f"  Последовательных успехов: {success_count}/{CONSECUTIVE_SUCCESS_THRESHOLD}")
             print(f"  Лучший средний reward: {best_avg_reward:.2f}")
-
-        # Сохранение лучшей модели
-        current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:]) if len(scores) >= REWARD_HISTORY_WINDOW else np.mean(scores)
-        if current_avg > best_avg_reward:
-            best_avg_reward = current_avg
-            best_q_table = q_table.copy()
-            print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
 
     env.close()
     return scores, avg_scores, td_errors_history, best_q_table, best_avg_reward, epsilon_history, alpha_history
