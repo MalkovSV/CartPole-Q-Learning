@@ -228,18 +228,26 @@ def train_q_learning():
         else:
             avg_scores.append(np.mean(scores))
 
-        # === КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ПРОВЕРКА УСПЕХА НА КАЖДОМ ЭПИЗОДЕ ===
+        # ПРОВЕРКА СТАБИЛЬНОГО УСПЕХА
         if len(scores) >= REWARD_HISTORY_WINDOW:
             current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:])
+
             if current_avg >= TARGET_EPISODE_REWARD:
-                success_count += 1
+                success_count += 1  # Увеличиваем счётчик при достижении целевого reward
+
+                # Проверяем, достигли ли требуемого количества последовательных успехов
                 if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
                     print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
                     print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
+                    print(f"   Обучение завершено успешно.")
                     break
             else:
-                # Сброс счётчика, если условие не выполнено
+                # Сбрасываем счётчик, если текущий средний reward ниже целевого
                 success_count = 0
+        else:
+            # Пока недостаточно данных для расчёта среднего reward за окно эпизодов,
+            # считаем, что последовательный успех не достигнут
+            success_count = 0
 
         # === КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: УСЛОВНАЯ ЛОГИКА ДЛЯ РАСЧЁТА СРЕДНЕГО REWARD ===
         if len(scores) >= REWARD_HISTORY_WINDOW:
