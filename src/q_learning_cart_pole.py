@@ -197,7 +197,8 @@ def train_q_learning():
             td_errors.append(abs(td_error))  # Сохраняем абсолютную ошибку
 
             alpha = get_learning_rate(episode, td_error)
-            q_table[discretized_state + (action,)] += alpha * td_error
+            indices = discretized_state + (action,)
+            q_table[indices] += alpha * td_error
 
             discretized_state = discretized_next_state
             score += base_reward
@@ -220,17 +221,14 @@ def train_q_learning():
         else:
             avg_scores.append(np.mean(scores))
 
+        
         # ПРОВЕРКА СТАБИЛЬНОГО УСПЕХА — исправленная логика
-        if len(scores) >= REWARD_HISTORY_WINDOW:
-            current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:])
+        if len(avg_scores) >= CONSECUTIVE_SUCCESS_THRESHOLD:
+            # Берём последние CONSECUTIVE_SUCCESS_THRESHOLD средних значений
+            recent_avg_scores = avg_scores[-CONSECUTIVE_SUCCESS_THRESHOLD:]
 
-            if current_avg >= TARGET_EPISODE_REWARD:
-                success_count += 1  # Увеличиваем счётчик при достижении целевого reward
-            else:
-                success_count = 0  # Сбрасываем счётчик, если текущий средний reward ниже целевого
-
-            # Проверяем, достигли ли требуемого количества последовательных успехов
-            if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
+            # Проверяем, что ВСЕ последние средние значения ≥ целевого reward
+            if all(avg >= TARGET_EPISODE_REWARD for avg in recent_avg_scores):
                 print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
                 print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
                 print(f"   Обучение завершено успешно.")
@@ -337,9 +335,12 @@ if __name__ == "__main__":
 
     # Сохранение лучшей модели
     if best_model is not None:
-        np.save('best_q_table.npy', best_model)
-        print(f"\n💾 Лучшая модель сохранена в 'best_q_table.npy'")
-        print(f"🏆 Лучший средний reward: {final_best_avg_reward:.2f}")
+        try:
+            np.save('best_q_table.npy', best_model)
+            print("\n💾 Лучшая модель сохранена в 'best_q_table.npy'")
+            print(f"🏆 Лучший средний reward: {final_best_avg_reward:.2f}")
+        except Exception as e:
+            print(f"Ошибка сохранения модели: {e}")
 
     # Статистика обучения
     print(f"\n--- СТАТИСТИКА ОБУЧЕНИЯ ---")
@@ -360,9 +361,7 @@ if __name__ == "__main__":
     test_scores = []
 
     for episode in range(test_episodes):
-        state = test_env.reset()
-        if isinstance(state, tuple):
-            state = state[0]
+        state, info = test_env.reset()  # Исправлено: корректная обработка reset()
         discretized_state = discretize_state(state)
         score = 0
 
@@ -378,6 +377,7 @@ if __name__ == "__main__":
         test_scores.append(score)
 
     test_env.close()
+
 
     print(f"Результаты тестирования лучшей модели ({test_episodes} эпизодов):")
     print(f"Средний reward: {np.mean(test_scores):.2f}")
