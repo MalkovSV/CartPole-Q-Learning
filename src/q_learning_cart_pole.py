@@ -172,7 +172,6 @@ def train_q_learning():
     print("Начало обучения Q‑learning...")
     print(f"Параметры: MAX_EPISODES={MAX_EPISODES}, TARGET_REWARD={TARGET_EPISODE_REWARD}")
 
-
     for episode in range(MAX_EPISODES):
         state = env.reset()
         if isinstance(state, tuple):
@@ -205,7 +204,6 @@ def train_q_learning():
             td_error = td_target - q_table[discretized_state + (action,)]
             td_errors.append(abs(td_error))  # Сохраняем абсолютную ошибку
 
-
             alpha = get_learning_rate(episode, td_error)
             q_table[discretized_state + (action,)] += alpha * td_error
 
@@ -230,6 +228,18 @@ def train_q_learning():
         else:
             avg_scores.append(np.mean(scores))
 
+        # === КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ПРОВЕРКА УСПЕХА НА КАЖДОМ ЭПИЗОДЕ ===
+        if len(scores) >= REWARD_HISTORY_WINDOW:
+            current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:])
+            if current_avg >= TARGET_EPISODE_REWARD:
+                success_count += 1
+                if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
+                    print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
+                    print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
+                    break
+            else:
+                # Сброс счётчика, если условие не выполнено
+                success_count = 0
 
         # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
         if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
@@ -243,22 +253,6 @@ def train_q_learning():
             print(f"  Средняя |TD‑ошибка|: {avg_td_error:.3f}")
             print(f"  Последовательных успехов: {success_count}/{CONSECUTIVE_SUCCESS_THRESHOLD}")
             print(f"  Лучший средний reward: {best_avg_reward:.2f}")
-
-                # Проверка успеха и сохранение лучшей модели
-        if (len(scores) >= REWARD_HISTORY_WINDOW and
-                np.mean(scores[-REWARD_HISTORY_WINDOW:]) >= TARGET_EPISODE_REWARD):
-            success_count += 1
-            print(f"  УСЛОВИЕ УСПЕХА ВЫПОЛНЕНО! Текущий средний: {np.mean(scores[-REWARD_HISTORY_WINDOW:]):.2f} "
-                  f"(цель: {TARGET_EPISODE_REWARD})")
-
-            if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
-                print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
-                print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
-                break
-        else:
-            if success_count > 0:
-                print(f"  Серия успехов прервана. Счётчик сброшен до 0.")
-            success_count = 0
 
         # Сохранение лучшей модели
         current_avg = np.mean(scores[-REWARD_HISTORY_WINDOW:]) if len(scores) >= REWARD_HISTORY_WINDOW else np.mean(scores)
