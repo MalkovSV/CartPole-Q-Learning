@@ -165,6 +165,10 @@ def train_q_learning():
     best_q_table = None
     best_avg_reward = -np.inf
 
+    # Инициализируем историю параметров
+    epsilon_history = []
+    alpha_history = []
+
     print("Начало обучения Q‑learning...")
     print(f"Параметры: MAX_EPISODES={MAX_EPISODES}, TARGET_REWARD={TARGET_EPISODE_REWARD}")
 
@@ -208,12 +212,16 @@ def train_q_learning():
             discretized_state = discretized_next_state
             score += base_reward
 
-            if done:
+            if done or truncated:
                 break
 
         scores.append(score)
         avg_td_error = np.mean(td_errors) if td_errors else 0
         td_errors_history.append(avg_td_error)
+
+        # Сохраняем текущие значения параметров
+        epsilon_history.append(epsilon)
+        alpha_history.append(alpha)
 
         # Расчёт среднего reward за последние N эпизодов
         if len(scores) >= REWARD_HISTORY_WINDOW:
@@ -260,10 +268,10 @@ def train_q_learning():
             print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
 
     env.close()
-    return scores, avg_scores, td_errors_history, best_q_table, best_avg_reward
+    return scores, avg_scores, td_errors_history, best_q_table, best_avg_reward, epsilon_history, alpha_history
 
 if __name__ == "__main__":
-    scores, avg_scores, td_errors, best_model, final_best_avg_reward = train_q_learning()
+    scores, avg_scores, td_errors, best_model, final_best_avg_reward, epsilon_history, alpha_history = train_q_learning()
 
     # Визуализация результатов
     plt.figure(figsize=(15, 10))
@@ -293,17 +301,17 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True)
 
-    # График 3: Epsilon и Alpha
+    # График 3: Epsilon и Alpha (реальные значения)
     plt.subplot(2, 2, 3)
-    episodes_for_params = list(range(0, len(scores), PROGRESS_REPORT_FREQUENCY))
-    epsilon_values = [get_exploration_rate(ep) for ep in episodes_for_params]
-    alpha_values = []
-    for ep in episodes_for_params:
-        # Для простоты берём среднее значение alpha за эпизод — в реальности нужно сохранять историю
-        alpha_values.append(0.3 if ep < 1000 else 0.2 if ep < 1500 else 0.1)
 
-    plt.plot(episodes_for_params, epsilon_values, label='Epsilon (исследование)', color='purple')
-    plt.plot(episodes_for_params, alpha_values, label='Alpha (скорость обучения)', color='brown')
+    # Определяем точки для отображения (каждые PROGRESS_REPORT_FREQUENCY эпизодов)
+    episodes_for_params = list(range(0, len(epsilon_history), PROGRESS_REPORT_FREQUENCY))
+    epsilon_values = [epsilon_history[ep] for ep in episodes_for_params]
+    alpha_values = [alpha_history[ep] for ep in episodes_for_params]
+
+    plt.plot(episodes_for_params, epsilon_values, label='Epsilon (исследование)', color='purple', marker='o')
+    plt.plot(episodes_for_params, alpha_values, label='Alpha (скорость обучения)', color='brown', marker='s')
+
     plt.xlabel('Эпизод')
     plt.ylabel('Значение')
     plt.title('Параметры обучения: Epsilon и Alpha')
