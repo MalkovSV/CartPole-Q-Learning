@@ -163,7 +163,7 @@ def train_q_learning():
     success_count = 0
 
     best_q_table = None
-    best_avg_reward = None
+    best_avg_reward =-np.inf
 
     # Инициализируем историю параметров
     epsilon_history = []
@@ -255,10 +255,7 @@ def train_q_learning():
         else:
             current_avg = np.mean(scores)  # Берём среднее всех доступных эпизодов
 
-        # ИНИЦИАЛИЗАЦИЯ best_avg_reward ПРИ ПЕРВОМ РАСЧЁТЕ
-        if best_avg_reward is None:
-            best_avg_reward = current_avg
-        elif current_avg > best_avg_reward:
+        if current_avg > best_avg_reward:  # безопасно: сравниваем с -np.inf
             best_avg_reward = current_avg
             best_q_table = q_table.copy()
             print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
@@ -280,6 +277,7 @@ def train_q_learning():
     return scores, avg_scores, td_errors_history, best_q_table, best_avg_reward, epsilon_history, alpha_history
 
 if __name__ == "__main__":
+
     scores, avg_scores, td_errors, best_model, final_best_avg_reward, epsilon_history, alpha_history = train_q_learning()
 
     # Визуализация результатов
@@ -288,11 +286,17 @@ if __name__ == "__main__":
     # График 1: Reward за эпизод и средний reward
     plt.subplot(2, 2, 1)
     plt.plot(scores, label='Reward за эпизод', alpha=0.6)
+
     if len(avg_scores) > 0:
-        plt.plot(range(REWARD_HISTORY_WINDOW - 1, len(avg_scores) + REWARD_HISTORY_WINDOW - 1),
-                  avg_scores, label='Средний reward ({REWARD_HISTORY_WINDOW} эпизодов)', color='red')
+        # Создаём ось X той же длины, что и avg_scores
+        episodes_x = list(range(REWARD_HISTORY_WINDOW - 1,
+                            REWARD_HISTORY_WINDOW - 1 + len(avg_scores)))
+        plt.plot(episodes_x, avg_scores,
+                label=f'Средний reward ({REWARD_HISTORY_WINDOW} эпизодов)',
+                color='red')
+
     plt.axhline(y=TARGET_EPISODE_REWARD, color='green', linestyle='--',
-               label=f'Целевой reward {TARGET_EPISODE_REWARD}')
+            label=f'Целевой reward {TARGET_EPISODE_REWARD}')
     plt.xlabel('Эпизод')
     plt.ylabel('Reward')
     plt.title('Обучение Q‑learning: Reward динамика')
