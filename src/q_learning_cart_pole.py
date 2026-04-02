@@ -24,10 +24,10 @@ STATE_VALUE_BOUNDS = [
 # ДОБАВЛЕННАЯ КОНСТАНТА ЛИМИТА РАЗМЕРА
 MAX_Q_TABLE_SIZE = 1_000_000  # Максимум 1 млн элементов — можно настроить
 
-Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [2]
+""" Q_TABLE_SHAPE = STATE_BUCKET_SIZES + [2]
 q_table = np.zeros(Q_TABLE_SHAPE)
 best_q_table = None
-best_avg_reward = -np.inf
+best_avg_reward = -np.inf """
 
 def check_q_table_size(bucket_sizes, n_actions, max_size):
     """
@@ -100,12 +100,31 @@ EWMA_SMOOTHING_ALPHA = 0.1
 REWARD_HISTORY_WINDOW = 50
 PROGRESS_REPORT_FREQUENCY = 100
 
-def calculate_ewma(scores, alpha=EWMA_SMOOTHING_ALPHA):
+def calculate_ewma(scores, alpha=EWMA_SMOOTHING_ALPHA, warmup_period=5):
+    """
+    Рассчитывает экспоненциально взвешенное скользящее среднее с периодом разогрева.
+
+    Args:
+        scores: список значений для сглаживания
+        alpha: коэффициент сглаживания (0 < alpha <= 1)
+        warmup_period: количество первых значений для усреднения (период разогрева)
+    Returns:
+        float: значение EWMA
+    """
     if not scores:
-        return 0
-    ewma = scores[0]
-    for score in scores[1:]:
+        return 0.0
+
+    # Если данных меньше периода разогрева, берём среднее всех доступных
+    if len(scores) <= warmup_period:
+        return np.mean(scores)
+
+    # Инициализируем EWMA как среднее первых warmup_period значений
+    ewma = np.mean(scores[:warmup_period])
+
+    # Применяем EWMA к оставшимся значениям
+    for score in scores[warmup_period:]:
         ewma = alpha * score + (1 - alpha) * ewma
+
     return ewma
 
 def train_q_learning():
@@ -206,7 +225,8 @@ def train_q_learning():
 
         # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
         if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
-            ewma_score = calculate_ewma(scores[-REWARD_HISTORY_WINDOW:])
+            # Используем исправленную функцию с периодом разогрева 5 эпизодов
+            ewma_score = calculate_ewma(scores[-REWARD_HISTORY_WINDOW:], warmup_period=5)
             print(f"\n--- Эпизод {episode + 1} ---")
             print(f"  EWMA reward: {ewma_score:.2f}")
             print(f"  Средний reward ({REWARD_HISTORY_WINDOW} эпизодов): {avg_scores[-1]:.2f}")
