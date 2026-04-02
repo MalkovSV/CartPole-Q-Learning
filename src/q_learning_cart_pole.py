@@ -168,9 +168,7 @@ def train_q_learning():
     print(f"Параметры: MAX_EPISODES={MAX_EPISODES}, TARGET_REWARD={TARGET_EPISODE_REWARD}")
 
     for episode in range(MAX_EPISODES):
-        state = env.reset()
-        if isinstance(state, tuple):
-            state = state[0]
+        state, info = env.reset()  # Исправленная обработка reset()
         discretized_state = discretize_state(state)
         score = 0
         epsilon = get_exploration_rate(episode)
@@ -187,8 +185,7 @@ def train_q_learning():
             action_counts[action] += 1
 
             next_state, base_reward, done, truncated, _ = env.step(action)
-            if truncated:
-                done = True
+            done = done or truncated  # Объединённая проверка завершения
 
             reward = calculate_reward(next_state, base_reward)
             discretized_next_state = discretize_state(next_state)
@@ -205,13 +202,12 @@ def train_q_learning():
             discretized_state = discretized_next_state
             score += base_reward
 
-            if done or truncated:
+            if done:
                 break
 
         scores.append(score)
         avg_td_error = np.mean(td_errors) if td_errors else 0
         td_errors_history.append(avg_td_error)
-
 
         # Сохраняем текущие значения параметров
         epsilon_history.append(epsilon)
@@ -230,15 +226,15 @@ def train_q_learning():
 
             if current_avg >= TARGET_EPISODE_REWARD:
                 success_count += 1  # Увеличиваем счётчик при достижении целевого reward
-
-                # Проверяем, достигли ли требуемого количества последовательных успехов
-                if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
-                    print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
-                    print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
-                    print(f"   Обучение завершено успешно.")
-                    break
             else:
                 success_count = 0  # Сбрасываем счётчик, если текущий средний reward ниже целевого
+
+            # Проверяем, достигли ли требуемого количества последовательных успехов
+            if success_count >= CONSECUTIVE_SUCCESS_THRESHOLD:
+                print(f"\n✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ НА ЭПИЗОДЕ {episode + 1}!")
+                print(f"   Целевой reward {TARGET_EPISODE_REWARD} удерживается {CONSECUTIVE_SUCCESS_THRESHOLD} проверок подряд.")
+                print(f"   Обучение завершено успешно.")
+                break
 
         # === КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: УСЛОВНАЯ ЛОГИКА ДЛЯ РАСЧЁТА СРЕДНЕГО REWARD ===
         if len(scores) >= REWARD_HISTORY_WINDOW:
@@ -251,7 +247,7 @@ def train_q_learning():
             best_q_table = q_table.copy()
             print(f"  🏆 ОБНОВЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ: средний reward = {best_avg_reward:.2f}")
 
-                # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
+        # Логирование каждые PROGRESS_REPORT_FREQUENCY эпизодов
         if (episode + 1) % PROGRESS_REPORT_FREQUENCY == 0:
             # Используем исправленную функцию с периодом разогрева 5 эпизодов
             ewma_score = calculate_ewma(scores[-REWARD_HISTORY_WINDOW:], warmup_period=5)
