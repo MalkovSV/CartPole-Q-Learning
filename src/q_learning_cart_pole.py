@@ -13,7 +13,7 @@ CONSECUTIVE_SUCCESS_THRESHOLD = 5
 DISCOUNT_FACTOR_GAMMA = 0.99
 
 # КОНФИГУРАЦИЯ ДИСКРЕТИЗАЦИИ СОСТОЯНИЙ
-STATE_BUCKET_SIZES = [6, 6, 15, 12]
+STATE_BUCKET_SIZES = [6, 6, 20, 12]
 STATE_VALUE_BOUNDS = [
     (-4.8, 4.8),
     (-3.5, 3.5),
@@ -25,6 +25,7 @@ STATE_VALUE_BOUNDS = [
 MAX_Q_TABLE_SIZE = 1_000_000
 REWARD_HISTORY_WINDOW = 50
 PROGRESS_REPORT_FREQUENCY = 100
+MAX_STEPS_PER_EPISODE = 500  # Новое ограничение шагов на эпизод
 
 # ПАРАМЕТРЫ EPSILON‑GREEDY
 EPSILON_START = 1.0
@@ -205,12 +206,12 @@ def analyze_td_errors_distribution(td_errors_history, bins=50):
 
     plt.figure(figsize=(12, 4))
 
-    # Гистограмма
+    # Гистограмма с логарифмической шкалой
     plt.subplot(1, 2, 1)
-    plt.hist(all_errors, bins=bins, alpha=0.7, color='skyblue')
-    plt.xlabel('|TD‑ошибка|')
-    plt.ylabel('Частота')
-    plt.title('Распределение TD‑ошибок')
+    plt.hist(all_errors, bins=bins, alpha=0.7, color='skyblue', log=True)
+    plt.xlabel('|TD‑ошибка| (логарифмическая шкала)')
+    plt.ylabel('Частота (логарифм)')
+    plt.title('Распределение TD‑ошибок (логарифмическая шкала)')
     plt.grid(True, alpha=0.3)
 
     # Статистика
@@ -294,7 +295,7 @@ class QLearningTrainer:
         td_errors = []
         epsilon = calculate_epsilon(episode)
 
-        for t in range(500):  # Максимум шагов в эпизоде
+        for t in range(MAX_STEPS_PER_EPISODE):  # Максимум шагов в эпизоде
             # Выбор действия: исследование или эксплуатация
             action = self._select_action(discretized_state, epsilon)
             # Взаимодействие с окружением
@@ -381,7 +382,16 @@ class QLearningTrainer:
         print(f"  Средний reward ({REWARD_HISTORY_WINDOW} эпизодов): {self.avg_scores[-1]:.2f}")
         print(f"  Текущий epsilon: {episode_result['epsilon']:.3f}")
         print(f"  Текущая alpha: {episode_result['alpha']:.3f}")
-        print(f"  Средняя |TD‑ошибка|: {self.td_errors_history[-1]:.3f}")
+
+        # Расчёт и вывод средней TD‑ошибки за эпизод
+        td_errors = episode_result.get('td_errors', [])
+        if td_errors:  # Проверяем, есть ли ошибки в текущем эпизоде
+            avg_td_error = np.mean(td_errors)
+            print(f"  Средняя |TD‑ошибка| за эпизод: {avg_td_error:.3f}")
+        else:
+            print("  Средняя |TD‑ошибка|: нет данных за эпизод")
+
+        # Вывод сообщения о достижении стабильного успеха (только если условие выполнено)
         if self._check_success_condition():
             print(f"✅ СТАБИЛЬНЫЙ УСПЕХ ДОСТИГНУТ: {CONSECUTIVE_SUCCESS_THRESHOLD} эпизодов подряд ≥ {TARGET_EPISODE_REWARD}")
 
